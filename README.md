@@ -1,6 +1,8 @@
 # Vadana
 
-**Vadana** (Sanskrit: *vadana* — speech) is an open-source, local desktop voice assistant. Tauri + React talk to a **Python sidecar** over WebSocket. Speech is captured, segmented with **Silero VAD**, transcribed with **local OpenAI Whisper** (`openai-whisper` / PyTorch, default `small`), sent to **LM Studio** (or any **OpenAI-compatible** local server), then spoken with **Supertonic**, **Piper** (if configured), or **pyttsx3** / SAPI on Windows.
+**Vadana** (Sanskrit: *vadana* — speech) is an open-source, local desktop voice assistant. Tauri + React talk to a **Python sidecar** over WebSocket. Speech is captured, segmented with **Silero VAD**, transcribed with **local OpenAI Whisper** (`openai-whisper` / PyTorch, default `small`), sent to an LLM via **LiteLLM** (default **LM Studio**; also OpenAI, Anthropic, Ollama, Groq), then spoken with **Supertonic**, **Piper** (if configured), or **pyttsx3** / SAPI on Windows.
+
+**Chat history** is stored in **Tauri SQLite** (sidebar). **Conversation context** is kept in the backend for the active session and shown as token usage in the header. Cloud API keys are stored in the **OS keychain**, not on disk.
 
 ## Documentation
 
@@ -36,7 +38,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-Configure **LM Studio base URL**, **model id**, TTS options, VAD vs **push-to-talk**, then **Start session**. Details: [docs/frontend.md](docs/frontend.md) and [backend/README.md](backend/README.md).
+Use the sidebar for **New chat** / past sessions. Open **Settings** for provider, model, TTS, and VAD. **Start** a voice session, speak or type; context usage appears in the header. Details: [docs/frontend.md](docs/frontend.md) and [backend/README.md](backend/README.md).
 
 ## LM Studio
 

@@ -9,9 +9,14 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tauri_plugin_sql::{Migration, MigrationKind};
+
+mod attachments;
+mod chat_title;
+mod keyring_store;
 
 const LIVE_VOICE_PORT: u16 = 8765;
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 3;
 
 pub struct BackendState {
     pub child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
@@ -255,6 +260,7 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
     }
 
     let backend_dir = backend_dir(&app)?;
+    let attachments_dir = attachments::attachments_dir(&app)?;
 
     let (mut rx, child) = app
         .shell()
@@ -262,6 +268,10 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         .args(["run", "python", "main.py"])
         .current_dir(&backend_dir)
         .env("LIVE_VOICE_PORT", port.to_string())
+        .env(
+            "LIVE_VOICE_ATTACHMENTS_DIR",
+            attachments_dir.to_string_lossy().to_string(),
+        )
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -673,6 +683,27 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations(
+                    "sqlite:vadana.db",
+                    vec![
+                        Migration {
+                            version: 1,
+                            description: "create_chats_and_messages",
+                            sql: include_str!("../migrations/001_init.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 2,
+                            description: "message_content_format",
+                            sql: include_str!("../migrations/002_message_content.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                    ],
+                )
+                .build(),
+        )
         .manage(BackendState {
             child: Mutex::new(None),
         })
@@ -690,6 +721,13 @@ pub fn run() {
             voice_ws_connect,
             voice_ws_send,
             voice_ws_disconnect,
+            keyring_store::set_provider_api_key,
+            keyring_store::get_provider_api_key,
+            keyring_store::delete_provider_api_key,
+            keyring_store::has_provider_api_key,
+            chat_title::generate_chat_title,
+            attachments::stage_attachment,
+            attachments::get_attachments_dir,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

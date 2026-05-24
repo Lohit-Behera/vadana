@@ -17,9 +17,18 @@ export const DEFAULT_VOICE_SYSTEM_PROMPT = [
   "If they ask which model you are, answer briefly in neutral terms; do not recite marketing blurbs or long vendor descriptions unless they explicitly ask for details.",
 ].join("\n\n");
 
+export type LlmProvider =
+  | "lm_studio"
+  | "openai"
+  | "anthropic"
+  | "ollama"
+  | "groq";
+
 export type VoiceSettings = {
+  llmProvider: LlmProvider;
   lmBaseUrl: string;
   model: string;
+  maxContextTokens: number;
   pushToTalk: boolean;
   inputGain: number;
   vadSensitivity: number;
@@ -30,11 +39,15 @@ export type VoiceSettings = {
   supertonicVoice: string;
   supertonicLang: string;
   supertonicModel: string;
+  /** Reserved for future LiteLLM vector_store_ids / RAG integration. */
+  vectorStoreIds: string[];
 };
 
 export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
+  llmProvider: "lm_studio",
   lmBaseUrl: "http://127.0.0.1:1234",
   model: "local-model",
+  maxContextTokens: 128_000,
   pushToTalk: false,
   inputGain: 1,
   vadSensitivity: 0.5,
@@ -45,6 +58,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   supertonicVoice: "",
   supertonicLang: "en",
   supertonicModel: "supertonic-3",
+  vectorStoreIds: [],
 };
 
 function fromLocalStorage(): VoiceSettings | null {

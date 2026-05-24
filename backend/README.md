@@ -1,6 +1,6 @@
 # Backend documentation
 
-**live-voice-backend** is the Python **WebSocket sidecar** for [Vadana](../README.md). It captures microphone audio, segments speech with **Silero VAD**, transcribes with **local OpenAI Whisper** (`openai-whisper` / PyTorch), streams replies from an **OpenAI-compatible** chat API (e.g. LM Studio), and plays responses with **Supertonic**, **Piper**, or **pyttsx3** (Windows SAPI).
+**live-voice-backend** is the Python **WebSocket sidecar** for [Vadana](../README.md). It captures microphone audio, segments speech with **Silero VAD**, transcribes with **local OpenAI Whisper** (`openai-whisper` / PyTorch), streams replies via **LiteLLM** (LM Studio, OpenAI, Anthropic, Ollama, Groq), and plays responses with **Supertonic**, **Piper**, or **pyttsx3** (Windows SAPI).
 
 The Tauri app starts this process with `uv run python main.py` and talks to it over **`ws://127.0.0.1:8765`** (configurable). Audio is processed and played **on the machine running Python**, not in the browser.
 
@@ -8,7 +8,7 @@ The Tauri app starts this process with `uv run python main.py` and talks to it o
 
 - **Python 3.11 or 3.12** (`requires-python = ">=3.11,<3.13"`)
 - **[uv](https://docs.astral.sh/uv/)** for dependencies and running the app
-- **LM Studio** (or any OpenAI-compatible server) for the LLM
+- **LM Studio** (LiteLLM `lm_studio/` provider) or cloud LLMs via LiteLLM
 - **Windows** is the primary target (pyttsx3 + SAPI, COM for TTS); other platforms may work with Piper/Supertonic only
 - **Microphone** and **speakers/headphones** (headphones strongly recommended to reduce echo)
 
@@ -52,7 +52,8 @@ flowchart TB
   VS --> LLM[stream_chat_completions\nllm_client.py]
   VS --> TTS[TTSEngine\ntts_engine.py]
   VS --> PLAY[PlaybackStream\naudio_io.py]
-  LLM --> LM[LM Studio / OpenAI-compatible HTTP]
+  LLM --> LITELLM[LiteLLM acompletion]
+  LITELLM --> LM[LM Studio / OpenAI / Anthropic / Ollama / Groq]
   STT --> WHISPER[openai-whisper]
   TTS --> ST[Supertonic / Piper / pyttsx3]
 ```
@@ -62,7 +63,7 @@ flowchart TB
 1. Client sends `config` (optional updates) and `start`.
 2. **VAD** or **push-to-talk** collects utterance audio.
 3. **STT** (`whisper_model`) → text → `stt_final` to client.
-4. **LLM** streams tokens → `llm_token`; full reply → `assistant_text`.
+4. **LLM** (with prior `chat_history` + new user turn) streams tokens → `llm_token`; full reply → `assistant_text`; `context_usage` with token counts.
 5. **text_split** breaks reply into speakable chunks (sentence boundaries; decimals like `3.5` are not split on the inner `.`).
 6. **TTS** synthesizes each chunk; **playback** plays locally with optional `playback_gain`.
 
@@ -81,7 +82,7 @@ backend/
 │   ├── session.py          # VoiceSession: pipeline orchestration
 │   ├── protocol.py         # Message types, server_event helper
 │   ├── errors.py           # Stable error codes for the UI
-│   ├── llm_client.py       # SSE streaming chat completions
+│   ├── llm_client.py       # LiteLLM async streaming + provider mapping
 │   ├── stt.py              # Whisper load + transcribe
 │   ├── vad.py              # Silero VAD stream
 │   ├── tts_engine.py       # Supertonic → Piper → pyttsx3 chain
@@ -98,9 +99,9 @@ Full message tables: **[protocol.md](protocol.md)**.
 Summary:
 
 - **Transport:** JSON text frames over WebSocket.
-- **Handshake:** Server sends `{"type":"ready","port":8765,"protocol_version":1}` on connect.
-- **Client:** `config`, `start`, `stop`, `interrupt`, `ptt_down`, `ptt_up`, `user_text`.
-- **Server:** `state`, `stt_final`, `llm_token`, `assistant_text`, `error`, `notice`, `interrupt_ack`.
+- **Handshake:** Server sends `{"type":"ready","port":8765,"protocol_version":2}` on connect.
+- **Client:** `config` (includes `llm_provider`, `api_key`, `chat_history`, `max_context_tokens`), `start`, `stop`, `interrupt`, `ptt_down`, `ptt_up`, `user_text`.
+- **Server:** `state`, `stt_final`, `llm_token`, `assistant_text`, `context_usage`, `error`, `notice`, `interrupt_ack`.
 - **Max client message size:** 64 KiB UTF-8 (oversize → `error`).
 
 ### Error codes (`errors.py`)

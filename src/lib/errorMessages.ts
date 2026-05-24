@@ -9,6 +9,10 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Microphone unavailable. Allow microphone access for this app in Windows settings.",
   pipeline_failed:
     "Voice pipeline failed to start. See logs for details.",
+  model_no_multimodal:
+    "This model does not support images or PDFs. Choose a vision-capable model in Settings.",
+  invalid_attachment:
+    "Could not read the attachment. Stop the session, press Start again, then re-attach the file.",
   unknown: "An unexpected error occurred.",
 };
 

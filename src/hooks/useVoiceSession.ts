@@ -12,8 +12,10 @@ import {
   DEFAULT_VOICE_SYSTEM_PROMPT,
   loadVoiceSettings,
   saveVoiceSettings,
+  type LlmProvider,
   type VoiceSettings,
 } from "@/lib/settings";
+import type { UserTurnPayload } from "@/lib/chatsDb";
 import { settingsToVoiceConfig, voiceWsUrl } from "@/lib/voiceConfig";
 
 export type VoiceUiState =
@@ -25,10 +27,20 @@ export type VoiceUiState =
   | "speaking"
   | "error";
 
+export type TranscriptAttachment = {
+  id: string;
+  kind: "image" | "pdf";
+  mime: string;
+  filename: string;
+  path: string;
+  previewUrl?: string;
+};
+
 export type TranscriptLine = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  attachments?: TranscriptAttachment[];
 };
 
 export type PreflightCheck = {
@@ -51,30 +63,68 @@ type ServerMsg = {
   code?: string;
   port?: number;
   protocol_version?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  max_context_tokens?: number;
+  percent?: number;
+  user_display?: string;
+};
+
+export type ContextUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  maxContextTokens: number;
+  percent: number;
+};
+
+export type UserMessagePayload = {
+  text: string;
+  attachments?: TranscriptAttachment[];
+};
+
+export type ChatBridge = {
+  getHistoryForBackend: () => Promise<{ role: string; content: string }[]>;
+  persistTurn: (user: UserTurnPayload, assistantText: string) => Promise<void>;
+  ensureActiveChat: () => Promise<string | null>;
 };
 
 export { DEFAULT_VOICE_SYSTEM_PROMPT };
 
-export function useVoiceSession() {
+export function useVoiceSession(chatBridge?: ChatBridge) {
   const [uiState, setUiState] = useState<VoiceUiState>("disconnected");
   const [error, setError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [streamingAssistant, setStreamingAssistant] = useState("");
+  const [streamingReasoning, setStreamingReasoning] = useState("");
   const [wsPort, setWsPort] = useState(8765);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
   /** True after WebSocket connects until user stops or connection drops. */
   const [sessionActive, setSessionActive] = useState(false);
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const pendingUserTextRef = useRef<UserMessagePayload | null>(null);
+  /** Typed multimodal sends add the user line locally before `stt_final`. */
+  const skipNextSttFinalAppendRef = useRef(false);
+  const chatBridgeRef = useRef(chatBridge);
+  chatBridgeRef.current = chatBridge;
   const bridgeUnlistenRef = useRef<(() => void) | null>(null);
   const intentionalCloseRef = useRef(false);
   const startAttemptRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>(
+    DEFAULT_VOICE_SETTINGS.llmProvider,
+  );
   const [lmBaseUrl, setLmBaseUrl] = useState(DEFAULT_VOICE_SETTINGS.lmBaseUrl);
   const [model, setModel] = useState(DEFAULT_VOICE_SETTINGS.model);
+  const [maxContextTokens, setMaxContextTokens] = useState(
+    DEFAULT_VOICE_SETTINGS.maxContextTokens,
+  );
   const [pushToTalk, setPushToTalk] = useState(DEFAULT_VOICE_SETTINGS.pushToTalk);
   const [inputGain, setInputGain] = useState(DEFAULT_VOICE_SETTINGS.inputGain);
   const [vadSensitivity, setVadSensitivity] = useState(
@@ -100,8 +150,10 @@ export function useVoiceSession() {
 
   const currentSettings = useCallback(
     (): VoiceSettings => ({
+      llmProvider,
       lmBaseUrl,
       model,
+      maxContextTokens,
       pushToTalk,
       inputGain,
       vadSensitivity,
@@ -114,8 +166,10 @@ export function useVoiceSession() {
       supertonicModel,
     }),
     [
+      llmProvider,
       lmBaseUrl,
       model,
+      maxContextTokens,
       pushToTalk,
       inputGain,
       vadSensitivity,
@@ -131,8 +185,10 @@ export function useVoiceSession() {
 
   useEffect(() => {
     void loadVoiceSettings().then((s) => {
+      setLlmProvider(s.llmProvider ?? DEFAULT_VOICE_SETTINGS.llmProvider);
       setLmBaseUrl(s.lmBaseUrl);
       setModel(s.model);
+      setMaxContextTokens(s.maxContextTokens ?? DEFAULT_VOICE_SETTINGS.maxContextTokens);
       setPushToTalk(s.pushToTalk);
       setInputGain(s.inputGain);
       setVadSensitivity(s.vadSensitivity);
@@ -209,6 +265,36 @@ export function useVoiceSession() {
     }
   }, []);
 
+  const buildVoiceConfig = useCallback(async () => {
+    const s = currentSettings();
+    let apiKey = "";
+    if (isTauri() && s.llmProvider !== "lm_studio" && s.llmProvider !== "ollama") {
+      try {
+        apiKey = await invoke<string>("get_provider_api_key", {
+          provider: s.llmProvider,
+        });
+      } catch {
+        apiKey = "";
+      }
+    }
+    const chatHistory = chatBridgeRef.current
+      ? await chatBridgeRef.current.getHistoryForBackend()
+      : [];
+    let attachmentsDir = "";
+    if (isTauri()) {
+      try {
+        attachmentsDir = await invoke<string>("get_attachments_dir");
+      } catch {
+        attachmentsDir = "";
+      }
+    }
+    return settingsToVoiceConfig(s, { apiKey, chatHistory, attachmentsDir });
+  }, [currentSettings]);
+
+  const sendConfig = useCallback(async () => {
+    sendJson(await buildVoiceConfig());
+  }, [buildVoiceConfig, sendJson]);
+
   const pushServerState = useCallback((s: string | undefined) => {
     if (!s) return;
     if (s === "idle") setUiState("idle");
@@ -234,11 +320,25 @@ export function useVoiceSession() {
           break;
         case "stt_final":
           if (msg.text) {
-            setTranscript((t) => [
-              ...t,
-              { id: crypto.randomUUID(), role: "user", text: msg.text! },
-            ]);
+            const pending = pendingUserTextRef.current;
+            pendingUserTextRef.current = {
+              text: msg.text,
+              attachments: pending?.attachments ?? [],
+            };
+            if (!skipNextSttFinalAppendRef.current) {
+              setTranscript((t) => [
+                ...t,
+                { id: crypto.randomUUID(), role: "user", text: msg.text! },
+              ]);
+            }
+            skipNextSttFinalAppendRef.current = false;
             setStreamingAssistant("");
+            setStreamingReasoning("");
+          }
+          break;
+        case "llm_reasoning_token":
+          if (msg.text) {
+            setStreamingReasoning((prev) => prev + msg.text);
           }
           break;
         case "llm_token":
@@ -248,12 +348,39 @@ export function useVoiceSession() {
           break;
         case "assistant_text":
           if (msg.text) {
+            const userPayload = pendingUserTextRef.current;
+            pendingUserTextRef.current = null;
+            if (userPayload && chatBridgeRef.current) {
+              void chatBridgeRef.current.persistTurn(
+                {
+                  text: userPayload.text,
+                  attachments: userPayload.attachments?.map((a) => ({
+                    id: a.id,
+                    kind: a.kind,
+                    mime: a.mime,
+                    filename: a.filename,
+                    path: a.path,
+                  })),
+                },
+                msg.text,
+              );
+            }
             setTranscript((t) => [
               ...t,
               { id: crypto.randomUUID(), role: "assistant", text: msg.text! },
             ]);
             setStreamingAssistant("");
+            setStreamingReasoning("");
           }
+          break;
+        case "context_usage":
+          setContextUsage({
+            promptTokens: msg.prompt_tokens ?? 0,
+            completionTokens: msg.completion_tokens ?? 0,
+            totalTokens: msg.total_tokens ?? 0,
+            maxContextTokens: msg.max_context_tokens ?? maxContextTokens,
+            percent: msg.percent ?? 0,
+          });
           break;
         case "error": {
           const friendly = friendlyErrorMessage(msg.message, msg.code);
@@ -271,7 +398,7 @@ export function useVoiceSession() {
           break;
       }
     },
-    [pushServerState],
+    [pushServerState, maxContextTokens],
   );
 
   const connectSocket = useCallback(
@@ -376,7 +503,7 @@ export function useVoiceSession() {
         return;
       }
       setSessionActive(true);
-      sendJson(settingsToVoiceConfig(currentSettings()));
+      await sendConfig();
       sendJson({ type: "start" });
       setUiState("listening");
     } catch (e) {
@@ -392,7 +519,7 @@ export function useVoiceSession() {
         /* ignore */
       }
     }
-  }, [connectSocket, currentSettings, preflight, runPreflight, sendJson]);
+  }, [connectSocket, preflight, runPreflight, sendConfig, sendJson]);
 
   const stopSession = useCallback(async () => {
     startAttemptRef.current += 1;
@@ -405,6 +532,7 @@ export function useVoiceSession() {
     bridgeUnlistenRef.current = null;
     await disconnectVoiceBridge().catch(() => {});
     setStreamingAssistant("");
+    setStreamingReasoning("");
     try {
       await invoke("stop_backend");
     } catch {
@@ -416,6 +544,7 @@ export function useVoiceSession() {
   const interrupt = useCallback(() => {
     sendJson({ type: "interrupt" });
     setStreamingAssistant("");
+    setStreamingReasoning("");
   }, [sendJson]);
 
   const sendUserText = useCallback(
@@ -423,6 +552,56 @@ export function useVoiceSession() {
       const t = text.trim();
       if (!t) return;
       sendJson({ type: "user_text", text: t });
+    },
+    [sendJson],
+  );
+
+  const sendUserMessage = useCallback(
+    (payload: UserMessagePayload) => {
+      const text = payload.text.trim();
+      const attachments = payload.attachments ?? [];
+      if (!text && attachments.length === 0) return;
+
+      const displayAttachments = attachments.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        mime: a.mime,
+        filename: a.filename,
+        path: a.path,
+        previewUrl: a.previewUrl,
+      }));
+
+      skipNextSttFinalAppendRef.current = true;
+      pendingUserTextRef.current = {
+        text: text || attachments.map((a) => a.filename).join(", "),
+        attachments: displayAttachments,
+      };
+
+      setTranscript((t) => [
+        ...t,
+        {
+          id: crypto.randomUUID(),
+          role: "user",
+          text:
+            text ||
+            attachments.map((a) => `[${a.kind}: ${a.filename}]`).join(" "),
+          attachments: displayAttachments,
+        },
+      ]);
+      setStreamingAssistant("");
+      setStreamingReasoning("");
+
+      sendJson({
+        type: "user_message",
+        text,
+        attachments: attachments.map((a) => ({
+          id: a.id,
+          kind: a.kind,
+          mime: a.mime,
+          path: a.path,
+          filename: a.filename,
+        })),
+      });
     },
     [sendJson],
   );
@@ -437,11 +616,27 @@ export function useVoiceSession() {
 
   const applySettings = useCallback(async () => {
     await saveVoiceSettings(currentSettings());
-    sendJson(settingsToVoiceConfig(currentSettings()));
+    await sendConfig();
     toast.success("Settings saved & applied", {
       description: "Persisted on disk and sent to the voice backend.",
     });
-  }, [sendJson, currentSettings]);
+  }, [currentSettings, sendConfig]);
+
+  const reloadSessionConfig = useCallback(async () => {
+    if (!sessionActive) return;
+    await sendConfig();
+  }, [sessionActive, sendConfig]);
+
+  const loadTranscript = useCallback((lines: TranscriptLine[]) => {
+    setTranscript(lines);
+    setStreamingAssistant("");
+    setStreamingReasoning("");
+    pendingUserTextRef.current = null;
+  }, []);
+
+  const resetContextUsage = useCallback(() => {
+    setContextUsage(null);
+  }, []);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -481,15 +676,21 @@ export function useVoiceSession() {
     error,
     transcript,
     streamingAssistant,
+    streamingReasoning,
+    contextUsage,
     wsPort,
     preflight,
     preflightBusy,
     canStart,
     runPreflight,
+    llmProvider,
+    setLlmProvider,
     lmBaseUrl,
     setLmBaseUrl,
     model,
     setModel,
+    maxContextTokens,
+    setMaxContextTokens,
     pushToTalk,
     setPushToTalk,
     inputGain,
@@ -514,8 +715,13 @@ export function useVoiceSession() {
     stopSession,
     interrupt,
     sendUserText,
+    sendUserMessage,
     pttDown,
     pttUp,
     applySettings,
+    reloadSessionConfig,
+    loadTranscript,
+    resetContextUsage,
+    sendConfig,
   };
 }

@@ -7,13 +7,26 @@ import json
 import logging
 from typing import Any
 
-import httpx
 import numpy as np
 import torch
 
 from live_voice.audio_io import MicStream, PlaybackStream
 from live_voice.errors import error_event
-from live_voice.llm_client import stream_chat_completions
+from live_voice.llm_client import (
+    StreamChunk,
+    reasoning_fallback_reply,
+    resolve_llm_params,
+    stream_chat_completions,
+)
+from live_voice.multimodal import (
+    AttachmentDict,
+    MultimodalError,
+    attachments_root,
+    build_user_content,
+    check_multimodal_support,
+    content_for_history,
+    user_display_text,
+)
 from live_voice.protocol import server_event
 from live_voice.stt import STTEngine
 from live_voice.text_split import flush_tts_chunks
@@ -34,7 +47,16 @@ def _resample_linear(x: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
 
 
 CLIENT_MSG_TYPES = frozenset(
-    {"config", "start", "stop", "interrupt", "ptt_down", "ptt_up", "user_text"}
+    {
+        "config",
+        "start",
+        "stop",
+        "interrupt",
+        "ptt_down",
+        "ptt_up",
+        "user_text",
+        "user_message",
+    }
 )
 
 class VoiceSession:
@@ -42,8 +64,8 @@ class VoiceSession:
         self.ws = ws
         self._running = False
         self._main_task: asyncio.Task[None] | None = None
-        self._http: httpx.AsyncClient | None = None
         self.gen_id = 0
+        self._messages: list[dict[str, Any]] = []
         self.cancel_turn = asyncio.Event()
         self._assistant_talking = False
         self._models_ready = False
@@ -54,8 +76,12 @@ class VoiceSession:
         self._tts: TTSEngine | None = None
         self._turn_lock = asyncio.Lock()
         self.config: dict[str, Any] = {
+            "llm_provider": "lm_studio",
             "lm_base_url": "http://127.0.0.1:1234",
             "model": "local-model",
+            "api_key": "",
+            "max_context_tokens": 128_000,
+            "chat_history": [],
             "push_to_talk": False,
             "input_gain": 1.0,
             "vad_sensitivity": 0.5,
@@ -90,11 +116,13 @@ class VoiceSession:
         sp = str(self.config.get("system_prompt", ""))
         preview = (sp[:80] + "…") if len(sp) > 80 else sp
         logger.info(
-            "Config | LLM base=%s chat_model=%r | whisper_model=%r | "
+            "Config | provider=%s LLM base=%s chat_model=%r | history_turns=%d | whisper_model=%r | "
             "push_to_talk=%s vad_barge_in=%s input_gain=%.2f vad_sensitivity=%.2f | "
             "piper_model=%r | supertonic voice=%r lang=%r model=%r | system_prompt[%d chars]=%s",
+            self.config.get("llm_provider"),
             self.config.get("lm_base_url"),
             self.config.get("model"),
+            len(self._messages),
             self.config.get("whisper_model"),
             self.config.get("push_to_talk"),
             self.config.get("vad_barge_in"),
@@ -107,6 +135,34 @@ class VoiceSession:
             len(sp),
             preview or "(empty)",
         )
+
+    def _apply_chat_history(self, raw: Any) -> None:
+        if not isinstance(raw, list):
+            return
+        out: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            role = item.get("role")
+            content = item.get("content")
+            if role not in ("user", "assistant"):
+                continue
+            if isinstance(content, list):
+                out.append({"role": role, "content": content})
+                continue
+            if isinstance(content, str) and content.strip():
+                if role == "user":
+                    root = attachments_root(str(self.config.get("attachments_dir") or ""))
+                    out.append(
+                        {
+                            "role": role,
+                            "content": content_for_history(content.strip(), root=root),
+                        },
+                    )
+                else:
+                    out.append({"role": role, "content": content.strip()})
+        self._messages = out
+        logger.info("Loaded chat_history: %d messages", len(self._messages))
 
     def _log_pipeline_loaded(self) -> None:
         assert self._vad is not None and self._stt is not None and self._tts is not None
@@ -122,9 +178,11 @@ class VoiceSession:
             getattr(self._stt, "_fp16", False),
         )
         logger.info(
-            "Pipeline | LLM=%s + /v1/chat/completions model_id=%r",
+            "Pipeline | LLM provider=%s base=%s model=%r history=%d",
+            self.config.get("llm_provider"),
             str(self.config.get("lm_base_url", "")).rstrip("/"),
             self.config.get("model"),
+            len(self._messages),
         )
         logger.info("Pipeline | TTS=%s", self._tts.backend_label)
 
@@ -148,8 +206,11 @@ class VoiceSession:
             return
         if mtype == "config":
             for key in (
+                "llm_provider",
                 "lm_base_url",
                 "model",
+                "api_key",
+                "max_context_tokens",
                 "push_to_talk",
                 "input_gain",
                 "vad_sensitivity",
@@ -160,9 +221,12 @@ class VoiceSession:
                 "supertonic_voice",
                 "supertonic_lang",
                 "supertonic_model",
+                "attachments_dir",
             ):
                 if key in data:
                     self.config[key] = data[key]
+            if "chat_history" in data:
+                self._apply_chat_history(data["chat_history"])
             self._log_config_update()
             if self._models_ready:
                 if self._tts is not None:
@@ -188,7 +252,19 @@ class VoiceSession:
             raw = data.get("text")
             if isinstance(raw, str) and raw.strip():
                 logger.info("WebSocket | user_text (%d chars)", len(raw.strip()))
-                asyncio.create_task(self._enqueue_typed_message(raw))
+                asyncio.create_task(self._enqueue_user_message(raw.strip(), []))
+            return
+        if mtype == "user_message":
+            raw_text = data.get("text")
+            text = raw_text.strip() if isinstance(raw_text, str) else ""
+            attachments = self._parse_attachments(data.get("attachments"))
+            if text or attachments:
+                logger.info(
+                    "WebSocket | user_message text=%d chars attachments=%d",
+                    len(text),
+                    len(attachments),
+                )
+                asyncio.create_task(self._enqueue_user_message(text, attachments))
             return
         if mtype == "ptt_down":
             self._ptt_active = True
@@ -209,7 +285,6 @@ class VoiceSession:
             return
         self._running = True
         self.cancel_turn.clear()
-        self._http = httpx.AsyncClient()
         logger.info("Voice session start (main loop spawning)")
         self._main_task = asyncio.create_task(self._main_loop(), name="voice-main")
 
@@ -227,9 +302,6 @@ class VoiceSession:
             self._mic.stop()
         if self._playback:
             self._playback.stop()
-        if self._http:
-            await self._http.aclose()
-            self._http = None
         self._models_ready = False
         if self._tts is not None:
             self._tts.close()
@@ -359,9 +431,35 @@ class VoiceSession:
             self.cancel_turn.clear()
             await self._process_utterance(audio, turn)
 
-    async def _enqueue_typed_message(self, raw: str) -> None:
-        if not self._playback or not self._tts or not self._http:
-            logger.warning("user_text ignored: session pipeline not ready yet")
+    @staticmethod
+    def _parse_attachments(raw: Any) -> list[AttachmentDict]:
+        if not isinstance(raw, list):
+            return []
+        out: list[AttachmentDict] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            kind = item.get("kind")
+            if isinstance(path, str) and path.strip() and isinstance(kind, str):
+                out.append(
+                    {
+                        "id": str(item.get("id") or ""),
+                        "kind": kind.strip().lower(),
+                        "mime": str(item.get("mime") or ""),
+                        "path": path.strip(),
+                        "filename": str(item.get("filename") or ""),
+                    },
+                )
+        return out
+
+    async def _enqueue_user_message(
+        self,
+        text: str,
+        attachments: list[AttachmentDict],
+    ) -> None:
+        if not self._playback or not self._tts:
+            logger.warning("user_message ignored: session pipeline not ready yet")
             await self.send_json(
                 server_event("notice", message="Session still starting—wait until listening, then try again."),
             )
@@ -372,80 +470,169 @@ class VoiceSession:
             self.gen_id += 1
             turn = self.gen_id
             self.cancel_turn.clear()
-            await self._process_typed_message(raw, turn)
+            await self._process_user_message(text, attachments, turn)
 
-    async def _respond_to_user_text(self, text: str, turn: int) -> None:
-        assert self._http is not None and self._tts is not None and self._playback is not None
-        await self.send_json(server_event("stt_final", text=text))
+    async def _emit_context_usage(self, usage: dict[str, int]) -> None:
+        max_ctx = int(self.config.get("max_context_tokens") or 128_000)
+        total = int(usage.get("total_tokens") or 0)
+        pct = round((total / max_ctx) * 100.0, 2) if max_ctx > 0 else 0.0
+        await self.send_json(
+            server_event(
+                "context_usage",
+                prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                completion_tokens=int(usage.get("completion_tokens") or 0),
+                total_tokens=total,
+                max_context_tokens=max_ctx,
+                percent=pct,
+            ),
+        )
+
+    async def _respond_to_user_turn(
+        self,
+        text: str,
+        attachments: list[AttachmentDict],
+        turn: int,
+        *,
+        from_stt: bool = False,
+    ) -> None:
+        assert self._tts is not None and self._playback is not None
+        display = user_display_text(text, attachments)
+        await self.send_json(server_event("stt_final", text=display))
         await self.send_json(server_event("state", state="thinking"))
 
-        messages = [
+        provider = str(self.config.get("llm_provider") or "lm_studio")
+        params = resolve_llm_params(
+            provider,
+            str(self.config.get("model") or "local-model"),
+            str(self.config.get("lm_base_url") or "http://127.0.0.1:1234"),
+            str(self.config.get("api_key") or ""),
+        )
+
+        attach_root = attachments_root(str(self.config.get("attachments_dir") or ""))
+        try:
+            check_multimodal_support(params.model, attachments)
+            user_content = build_user_content(text, attachments, root=attach_root)
+        except MultimodalError as exc:
+            logger.warning("Multimodal error: %s (attachments_dir=%r)", exc, self.config.get("attachments_dir"))
+            await self.send_json(error_event(str(exc), code=exc.code))
+            return
+
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": str(self.config.get("system_prompt", ""))},
-            {"role": "user", "content": text},
+            *self._messages,
+            {"role": "user", "content": user_content},
         ]
 
         self._assistant_talking = True
         await self.send_json(server_event("state", state="speaking"))
 
         full_reply = ""
+        reasoning_accum = ""
         tts_buffer = ""
-        base = str(self.config["lm_base_url"]).rstrip("/")
-        mid = str(self.config["model"])
+        max_tokens = int(self.config.get("max_context_tokens") or 128_000)
         logger.info(
-            "Turn %s | LLM stream: POST %s/v1/chat/completions model=%r",
+            "Turn %s | LLM stream provider=%s model=%r history=%d attachments=%d stt=%s",
             turn,
-            base,
-            mid,
+            provider,
+            self.config.get("model"),
+            len(self._messages),
+            len(attachments),
+            from_stt,
         )
+        usage_out: dict[str, int] | None = None
         try:
-            async for token in stream_chat_completions(
-                self._http,
-                str(self.config["lm_base_url"]),
-                str(self.config["model"]),
+            async for chunk in stream_chat_completions(
+                provider,
+                str(self.config.get("model") or "local-model"),
+                str(self.config.get("lm_base_url") or "http://127.0.0.1:1234"),
+                str(self.config.get("api_key") or ""),
                 messages,
                 self.cancel_turn,
+                max_tokens=max_tokens,
             ):
                 if self.cancel_turn.is_set() or turn != self.gen_id:
                     break
-                full_reply += token
-                await self.send_json(server_event("llm_token", text=token))
-                tts_buffer += token
-                chunks, tts_buffer = flush_tts_chunks(tts_buffer)
-                for c in chunks:
-                    if self.cancel_turn.is_set() or turn != self.gen_id:
-                        break
-                    await self._speak_chunk(c, turn)
-        except httpx.HTTPError as exc:
+                if isinstance(chunk, StreamChunk):
+                    if chunk.reasoning:
+                        reasoning_accum += chunk.reasoning
+                        await self.send_json(
+                            server_event("llm_reasoning_token", text=chunk.reasoning),
+                        )
+                    if chunk.text:
+                        full_reply += chunk.text
+                        await self.send_json(server_event("llm_token", text=chunk.text))
+                        tts_buffer += chunk.text
+                        chunks, tts_buffer = flush_tts_chunks(tts_buffer)
+                        for c in chunks:
+                            if self.cancel_turn.is_set() or turn != self.gen_id:
+                                break
+                            await self._speak_chunk(c, turn)
+                    if chunk.usage:
+                        usage_out = chunk.usage
+        except Exception as exc:  # noqa: BLE001
             logger.exception("LLM request failed")
             await self.send_json(error_event(str(exc), code="lm_unreachable"))
             return
 
+        reply = full_reply.strip()
+        if not reply and reasoning_accum.strip():
+            fallback = reasoning_fallback_reply(reasoning_accum)
+            if fallback:
+                reply = fallback
+                logger.info(
+                    "Turn %s | Using reasoning fallback reply (%d chars)",
+                    turn,
+                    len(reply),
+                )
+
         if not self.cancel_turn.is_set() and turn == self.gen_id and tts_buffer.strip():
             await self._speak_chunk(tts_buffer.strip(), turn)
+        elif (
+            not self.cancel_turn.is_set()
+            and turn == self.gen_id
+            and reply
+            and not full_reply.strip()
+        ):
+            await self._speak_chunk(reply, turn)
 
-        if full_reply.strip():
-            await self.send_json(server_event("assistant_text", text=full_reply.strip()))
-            logger.info(
-                "Turn %s | Assistant reply length=%d chars",
-                turn,
-                len(full_reply.strip()),
+        if reply and not self.cancel_turn.is_set() and turn == self.gen_id:
+            self._messages.append({"role": "user", "content": user_content})
+            self._messages.append({"role": "assistant", "content": reply})
+            await self.send_json(
+                server_event(
+                    "assistant_text",
+                    text=reply,
+                    user_display=display,
+                ),
             )
+            logger.info("Turn %s | Assistant reply length=%d chars", turn, len(reply))
+            if usage_out:
+                await self._emit_context_usage(usage_out)
 
-    async def _process_typed_message(self, raw: str, turn: int) -> None:
-        assert self._http is not None and self._tts is not None and self._playback is not None
-        text = raw.strip()
-        if not text:
+    async def _process_user_message(
+        self,
+        text: str,
+        attachments: list[AttachmentDict],
+        turn: int,
+    ) -> None:
+        assert self._tts is not None and self._playback is not None
+        if not text.strip() and not attachments:
             return
         try:
-            logger.info("Turn %s | User message (typed), %d chars", turn, len(text))
-            await self._respond_to_user_text(text, turn)
+            logger.info(
+                "Turn %s | User message text=%d chars attachments=%d",
+                turn,
+                len(text.strip()),
+                len(attachments),
+            )
+            await self._respond_to_user_turn(text, attachments, turn, from_stt=False)
         finally:
             self._assistant_talking = False
             if self._running:
                 await self.send_json(server_event("state", state="listening"))
 
     async def _process_utterance(self, audio: np.ndarray, turn: int) -> None:
-        assert self._stt is not None and self._http is not None and self._tts is not None and self._playback is not None
+        assert self._stt is not None and self._tts is not None and self._playback is not None
         try:
             dur_s = float(audio.size) / 16_000.0
             logger.info("Turn %s | STT: openai-whisper on %.2fs of audio", turn, dur_s)
@@ -459,7 +646,7 @@ class VoiceSession:
                 return
             if not text:
                 return
-            await self._respond_to_user_text(text, turn)
+            await self._respond_to_user_turn(text, [], turn, from_stt=True)
         finally:
             self._assistant_talking = False
             if self._running:

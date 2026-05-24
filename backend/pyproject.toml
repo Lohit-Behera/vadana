@@ -17,6 +17,7 @@ dependencies = [
     "pyttsx3>=2.90",
     "pywin32>=306; sys_platform == 'win32'",
     "supertonic>=1.2.1",
+    "litellm>=1.86.0",
 ]
 
 [tool.uv]

@@ -24,6 +24,8 @@ const WHISPER_PRESETS = ["tiny", "base", "small", "medium", "large"] as const;
 type Props = {
   v: Voice;
   disabled: boolean;
+  /** When set, only render that settings group (for tabbed settings page). */
+  section?: "voice" | "tts" | "system" | "all";
 };
 
 function Section({
@@ -189,11 +191,16 @@ function SupertonicDownloadBlock({
   );
 }
 
-export function SettingsPanel({ v, disabled }: Props) {
+export function SettingsPanel({ v, disabled, section = "all" }: Props) {
+  const show = (part: "voice" | "tts" | "system" | "llm") =>
+    section === "all" || section === part;
+
   const persistNow = useCallback(async () => {
     await saveVoiceSettings({
+      llmProvider: v.llmProvider,
       lmBaseUrl: v.lmBaseUrl,
       model: v.model,
+      maxContextTokens: v.maxContextTokens,
       pushToTalk: v.pushToTalk,
       inputGain: v.inputGain,
       vadSensitivity: v.vadSensitivity,
@@ -212,36 +219,15 @@ export function SettingsPanel({ v, disabled }: Props) {
 
   return (
     <div className="space-y-3">
-      <p className="text-muted-foreground flex items-center gap-2 text-xs">
-        <HardDrive className="size-3.5 shrink-0" />
-        Settings auto-save as you edit. Use &quot;Save &amp; apply&quot; to write
-        to disk and push to an active session.
-      </p>
+      {section === "all" && (
+        <p className="text-muted-foreground flex items-center gap-2 text-xs">
+          <HardDrive className="size-3.5 shrink-0" />
+          Settings auto-save as you edit. Use &quot;Save &amp; apply&quot; to write
+          to disk and push to an active session.
+        </p>
+      )}
 
-      <Section title="LLM (LM Studio)" summary="URL & model" defaultOpen>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="lm">Base URL</Label>
-            <Input
-              id="lm"
-              value={v.lmBaseUrl}
-              onChange={(e) => v.setLmBaseUrl(e.target.value)}
-              disabled={disabled}
-              placeholder="http://127.0.0.1:1234"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="model">Model id</Label>
-            <Input
-              id="model"
-              value={v.model}
-              onChange={(e) => v.setModel(e.target.value)}
-              disabled={disabled}
-            />
-          </div>
-        </div>
-      </Section>
-
+      {show("voice") && (
       <Section
         title="Speech-to-text (Whisper)"
         summary="Local STT model"
@@ -277,7 +263,9 @@ export function SettingsPanel({ v, disabled }: Props) {
           </p>
         </div>
       </Section>
+      )}
 
+      {show("voice") && (
       <Section title="Microphone & VAD" summary="PTT, gain, barge-in" defaultOpen>
         <div className="flex items-center justify-between gap-3">
           <Label htmlFor="ptt" className="text-sm font-normal">
@@ -334,7 +322,9 @@ export function SettingsPanel({ v, disabled }: Props) {
           />
         </div>
       </Section>
+      )}
 
+      {show("tts") && (
       <Section title="Text-to-speech" summary="Supertonic / Piper" defaultOpen>
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
@@ -384,7 +374,9 @@ export function SettingsPanel({ v, disabled }: Props) {
           />
         </div>
       </Section>
+      )}
 
+      {show("system") && (
       <Section title="System prompt" summary="Assistant behavior">
         <Textarea
           rows={6}
@@ -394,7 +386,9 @@ export function SettingsPanel({ v, disabled }: Props) {
           className="text-sm"
         />
       </Section>
+      )}
 
+      {section === "all" && (
       <Button
         type="button"
         variant="outline"
@@ -405,6 +399,7 @@ export function SettingsPanel({ v, disabled }: Props) {
         <HardDrive className="size-4" />
         Save settings to disk now
       </Button>
+      )}
     </div>
   );
 }

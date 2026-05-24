@@ -17,16 +17,22 @@ The **Vadana** UI is a **React 19** + **TypeScript** single-page app built with 
 ```
 src/
 ├── main.tsx              # React root mount
-├── App.tsx               # Main layout: session controls, transcript, settings drawer
+├── App.tsx               # Shell: sidebar + main chat / full-page settings
 ├── App.css               # Global / app-level styles
 ├── assets/               # Static assets (e.g. logos)
 ├── components/
-│   ├── SettingsPanel.tsx # LM Studio, Whisper, TTS, VAD / PTT controls
-│   └── ui/               # Reusable UI primitives (button, card, input, …)
+│   ├── layout/           # AppShell, AppSidebar, MainChat, ChatHeader
+│   ├── chat/             # TranscriptThread
+│   ├── settings/         # SettingsPage (tabs)
+│   ├── SettingsPanel.tsx # Voice / TTS / system fields
+│   └── ui/               # Reusable UI primitives (sidebar, tabs, progress, …)
 ├── hooks/
-│   └── useVoiceSession.ts  # Session lifecycle, WebSocket/bridge, transcript state
+│   ├── useVoiceSession.ts  # Session lifecycle, WebSocket/bridge, context usage
+│   └── useChats.ts         # SQLite chat list + persistence
 └── lib/
     ├── tauri.ts          # `invoke` / `listen` wrappers (desktop-only guard)
+    ├── chatsDb.ts        # Tauri SQL: chats + messages
+    ├── keychain.ts       # API key get/set via Rust keyring commands
     ├── voiceBridge.ts    # Rust WebSocket proxy (preferred in Tauri)
     ├── voiceConfig.ts    # UI settings → backend `config` JSON
     ├── settings.ts       # Persisted voice settings (store + localStorage)
@@ -115,7 +121,8 @@ Central hook exported to `App.tsx` and `SettingsPanel.tsx`. Responsibilities:
 - UI state machine: `disconnected` → `connecting` → `idle` | `listening` | `thinking` | `speaking` | `error`
 - Transcript lines and streaming assistant text
 - Preflight and session start/stop
-- Push-to-talk and typed `user_text` messages
+- Push-to-talk, typed `user_text`, and `user_message` with image/PDF attachments
+- Streaming `llm_reasoning_token` for thinking models (UI only; TTS uses answer text)
 - Debounced `saveVoiceSettings` when controls change
 
 ### `settings.ts`
@@ -171,7 +178,10 @@ Desktop-only helpers for Supertonic weight prefetch:
 | `voice_ws_disconnect` | Close bridge thread |
 | `check_supertonic_model` | Query Supertonic cache on disk |
 | `download_supertonic_model` | Run `live_voice.download_supertonic` |
-| `get_protocol_version` | Protocol version (currently `1`) |
+| `get_protocol_version` | Protocol version (currently `3`) |
+| `stage_attachment` | Copy image/PDF into app data; returns path for `user_message` |
+| `get_attachments_dir` | Attachments directory used by the Python sidecar |
+| `set_provider_api_key` / `get_provider_api_key` / `delete_provider_api_key` / `has_provider_api_key` | OS keychain for cloud LLM keys |
 
 See [backend/protocol.md](../backend/protocol.md) for WebSocket message shapes.
 

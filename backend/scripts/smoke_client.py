@@ -16,7 +16,7 @@ async def main() -> None:
     async with websockets.connect(uri) as ws:
         ready = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
         assert ready.get("type") == "ready", ready
-        assert ready.get("protocol_version") == 1, ready
+        assert ready.get("protocol_version") == 3, ready
         await ws.send(
             json.dumps(
                 {

@@ -27,8 +27,12 @@ describe("settingsToVoiceConfig", () => {
     });
     expect(cfg).toEqual({
       type: "config",
+      llm_provider: "lm_studio",
       lm_base_url: "http://127.0.0.1:1234",
       model: "qwen",
+      api_key: "",
+      max_context_tokens: 128_000,
+      chat_history: [],
       push_to_talk: true,
       input_gain: 1.5,
       vad_sensitivity: 0.8,
@@ -39,7 +43,15 @@ describe("settingsToVoiceConfig", () => {
       supertonic_voice: "M1",
       supertonic_lang: "hi",
       supertonic_model: "supertonic-3",
+      attachments_dir: "",
     });
+  });
+
+  it("passes attachments_dir when provided", () => {
+    const cfg = settingsToVoiceConfig(DEFAULT_VOICE_SETTINGS, {
+      attachmentsDir: "C:\\\\app\\\\attachments",
+    });
+    expect(cfg.attachments_dir).toBe("C:\\\\app\\\\attachments");
   });
 
   it("applies defaults for empty whisper and supertonic fields", () => {

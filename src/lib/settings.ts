@@ -55,7 +55,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   piperModel: "",
   whisperModel: "small",
   vadBargeIn: false,
-  supertonicVoice: "",
+  supertonicVoice: "F2",
   supertonicLang: "en",
   supertonicModel: "supertonic-3",
   vectorStoreIds: [],

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 import numpy as np
@@ -27,6 +28,9 @@ from live_voice.multimodal import (
     content_for_history,
     user_display_text,
 )
+from live_voice.knowledge import KnowledgeManager, build_reference_context
+from live_voice.knowledge.context import resolve_active_file_ids
+from live_voice.knowledge.fingerprint import library_fingerprint
 from live_voice.protocol import server_event
 from live_voice.stt import STTEngine
 from live_voice.text_split import flush_tts_chunks
@@ -56,6 +60,7 @@ CLIENT_MSG_TYPES = frozenset(
         "ptt_up",
         "user_text",
         "user_message",
+        "knowledge_reindex",
     }
 )
 
@@ -75,6 +80,7 @@ class VoiceSession:
         self._playback: PlaybackStream | None = None
         self._tts: TTSEngine | None = None
         self._turn_lock = asyncio.Lock()
+        self._pending_user_messages: list[tuple[str, list[AttachmentDict]]] = []
         self.config: dict[str, Any] = {
             "llm_provider": "lm_studio",
             "lm_base_url": "http://127.0.0.1:1234",
@@ -111,14 +117,36 @@ class VoiceSession:
         self._ptt_active = False
         self._ptt_buffer: list[np.ndarray] = []
         self._vad_threshold_used = 0.5
+        self._knowledge = KnowledgeManager()
+        self._knowledge_text_cache: dict[str, str] = {}
+        self._knowledge_revision_seen: int | None = None
+        self._knowledge_library_fingerprint: str = ""
+        self.config.setdefault("knowledge_mode", "off")
+        self.config.setdefault("knowledge_selection", {"folder_ids": [], "file_ids": []})
+        self.config.setdefault("knowledge_catalog", [])
+        self.config.setdefault("knowledge_revision", 0)
+        self.config.setdefault("knowledge_dir", "")
+        self.config.setdefault("knowledge_index_dir", "")
+        self.config.setdefault("chat_system_prompt", "")
 
     def _log_config_update(self) -> None:
         sp = str(self.config.get("system_prompt", ""))
         preview = (sp[:80] + "…") if len(sp) > 80 else sp
+        km = str(self.config.get("knowledge_mode") or "off")
+        sel = self.config.get("knowledge_selection")
+        if not isinstance(sel, dict):
+            sel = {}
+        catalog = self.config.get("knowledge_catalog")
+        if not isinstance(catalog, list):
+            catalog = []
+        n_files = len(
+            resolve_active_file_ids(km, sel, catalog),
+        )
         logger.info(
             "Config | provider=%s LLM base=%s chat_model=%r | history_turns=%d | whisper_model=%r | "
             "push_to_talk=%s vad_barge_in=%s input_gain=%.2f vad_sensitivity=%.2f | "
-            "piper_model=%r | supertonic voice=%r lang=%r model=%r | system_prompt[%d chars]=%s",
+            "piper_model=%r | supertonic voice=%r lang=%r model=%r | "
+            "knowledge_mode=%s active_files=%d knowledge_dir=%s | system_prompt[%d chars]=%s",
             self.config.get("llm_provider"),
             self.config.get("lm_base_url"),
             self.config.get("model"),
@@ -132,6 +160,9 @@ class VoiceSession:
             str(self.config.get("supertonic_voice") or ""),
             str(self.config.get("supertonic_lang") or "en"),
             str(self.config.get("supertonic_model") or "supertonic-3"),
+            km,
+            n_files,
+            self._knowledge_root_dir() or "(unset)",
             len(sp),
             preview or "(empty)",
         )
@@ -222,12 +253,39 @@ class VoiceSession:
                 "supertonic_lang",
                 "supertonic_model",
                 "attachments_dir",
+                "knowledge_mode",
+                "knowledge_selection",
+                "knowledge_catalog",
+                "knowledge_revision",
+                "knowledge_dir",
+                "knowledge_index_dir",
+                "chat_system_prompt",
             ):
                 if key in data:
                     self.config[key] = data[key]
+            self._sync_knowledge_env_from_config()
             if "chat_history" in data:
                 self._apply_chat_history(data["chat_history"])
+            rev = data.get("knowledge_revision")
+            if isinstance(rev, int):
+                self._knowledge_revision_seen = rev
+            catalog = self.config.get("knowledge_catalog")
+            if isinstance(catalog, list):
+                fp = library_fingerprint(catalog)
+                if not self._knowledge_library_fingerprint:
+                    self._knowledge_library_fingerprint = (
+                        self._knowledge._read_persisted_fingerprint()
+                    )
+                if fp and fp != self._knowledge_library_fingerprint:
+                    self._knowledge_library_fingerprint = fp
+                    asyncio.create_task(self._rebuild_knowledge_index(catalog))
             self._log_config_update()
+            logger.info(
+                "Config applied (TTS voice=%r lang=%r); send a message to reach the LLM",
+                str(self.config.get("supertonic_voice") or ""),
+                str(self.config.get("supertonic_lang") or "en"),
+            )
+            asyncio.create_task(self._warm_knowledge_cache())
             if self._models_ready:
                 if self._tts is not None:
                     self._tts.close()
@@ -253,6 +311,15 @@ class VoiceSession:
             if isinstance(raw, str) and raw.strip():
                 logger.info("WebSocket | user_text (%d chars)", len(raw.strip()))
                 asyncio.create_task(self._enqueue_user_message(raw.strip(), []))
+            return
+        if mtype == "knowledge_reindex":
+            catalog = self.config.get("knowledge_catalog")
+            if isinstance(catalog, list):
+                asyncio.create_task(self._rebuild_knowledge_index(catalog, force=True))
+            else:
+                await self.send_json(
+                    server_event("notice", message="No knowledge catalog in config yet."),
+                )
             return
         if mtype == "user_message":
             raw_text = data.get("text")
@@ -303,6 +370,7 @@ class VoiceSession:
         if self._playback:
             self._playback.stop()
         self._models_ready = False
+        self._pending_user_messages.clear()
         if self._tts is not None:
             self._tts.close()
         self._vad = self._stt = self._mic = self._playback = self._tts = None
@@ -366,6 +434,7 @@ class VoiceSession:
             self._playback = PlaybackStream(22_050)
             self._mic.start()
             self._playback.start()
+            await self._flush_pending_user_messages()
             await self.send_json(server_event("state", state="listening"))
 
             in_speech = False
@@ -453,16 +522,35 @@ class VoiceSession:
                 )
         return out
 
+    async def _flush_pending_user_messages(self) -> None:
+        if not self._pending_user_messages or not self._playback or not self._tts:
+            return
+        batch = self._pending_user_messages[:]
+        self._pending_user_messages.clear()
+        logger.info("Flushing %d queued user_message(s)", len(batch))
+        for text, attachments in batch:
+            await self._enqueue_user_message(text, attachments, _from_queue=True)
+
     async def _enqueue_user_message(
         self,
         text: str,
         attachments: list[AttachmentDict],
+        *,
+        _from_queue: bool = False,
     ) -> None:
         if not self._playback or not self._tts:
-            logger.warning("user_message ignored: session pipeline not ready yet")
-            await self.send_json(
-                server_event("notice", message="Session still starting—wait until listening, then try again."),
-            )
+            if not _from_queue:
+                self._pending_user_messages.append((text, attachments))
+                logger.info(
+                    "Queued user_message until pipeline ready (pending=%d)",
+                    len(self._pending_user_messages),
+                )
+                await self.send_json(
+                    server_event(
+                        "notice",
+                        message="Session still starting—your message is queued.",
+                    ),
+                )
             return
         async with self._turn_lock:
             if not self._running:
@@ -471,6 +559,30 @@ class VoiceSession:
             turn = self.gen_id
             self.cancel_turn.clear()
             await self._process_user_message(text, attachments, turn)
+
+    async def _rebuild_knowledge_index(
+        self,
+        catalog: list[Any],
+        *,
+        force: bool = False,
+    ) -> None:
+        async def _notice(msg: str) -> None:
+            await self.send_json(server_event("notice", message=msg))
+
+        result = await self._knowledge.rebuild(
+            catalog,
+            send_notice=_notice,
+            force=force,
+        )
+        if result.get("ok"):
+            if result.get("skipped"):
+                return
+            await self.send_json(
+                server_event(
+                    "notice",
+                    message=f"knowledge_index_ready:{result.get('doc_count', 0)}",
+                ),
+            )
 
     async def _emit_context_usage(self, usage: dict[str, int]) -> None:
         max_ctx = int(self.config.get("max_context_tokens") or 128_000)
@@ -486,6 +598,131 @@ class VoiceSession:
                 percent=pct,
             ),
         )
+
+    def _knowledge_root_dir(self) -> str:
+        cfg = str(self.config.get("knowledge_dir") or "").strip()
+        if cfg:
+            return cfg
+        return os.environ.get("LIVE_VOICE_KNOWLEDGE_DIR", "").strip()
+
+    def _knowledge_index_dir(self) -> str:
+        cfg = str(self.config.get("knowledge_index_dir") or "").strip()
+        if cfg:
+            return cfg
+        return os.environ.get("LIVE_VOICE_KNOWLEDGE_INDEX_DIR", "").strip()
+
+    def _sync_knowledge_env_from_config(self) -> None:
+        """Keep KnowledgeManager env in sync when sidecar was started without Tauri env."""
+        root = self._knowledge_root_dir()
+        index = self._knowledge_index_dir()
+        if root:
+            os.environ["LIVE_VOICE_KNOWLEDGE_DIR"] = root
+        if index:
+            os.environ["LIVE_VOICE_KNOWLEDGE_INDEX_DIR"] = index
+
+    def _knowledge_paths(self) -> tuple[str, dict[str, Any], list[Any]]:
+        selection = self.config.get("knowledge_selection")
+        if not isinstance(selection, dict):
+            selection = {}
+        catalog = self.config.get("knowledge_catalog")
+        if not isinstance(catalog, list):
+            catalog = []
+        return self._knowledge_root_dir(), selection, catalog
+
+    def _build_reference_knowledge_sync(self, query: str) -> str:
+        from pathlib import Path
+
+        root_raw, selection, catalog = self._knowledge_paths()
+        mode = str(self.config.get("knowledge_mode") or "off")
+        if not root_raw:
+            logger.warning(
+                "Knowledge dir not set (config knowledge_dir and LIVE_VOICE_KNOWLEDGE_DIR both empty)"
+            )
+            return ""
+        return build_reference_context(
+            query,
+            mode=mode,
+            selection=selection,
+            catalog=catalog,
+            knowledge_dir=Path(root_raw),
+            manager=self._knowledge,
+            text_cache=self._knowledge_text_cache,
+            prefer_fast=True,
+        )
+
+    async def _build_reference_knowledge(self, query: str) -> str:
+        return await asyncio.to_thread(self._build_reference_knowledge_sync, query)
+
+    def _compose_system_prompt(self, reference: str) -> str:
+        """Global system_prompt + per-chat addon + reply language + reference knowledge."""
+        parts: list[str] = []
+        base = str(self.config.get("system_prompt") or "").strip()
+        if base:
+            parts.append(base)
+        addon = str(self.config.get("chat_system_prompt") or "").strip()
+        if addon:
+            parts.append(addon)
+        lang = str(self.config.get("supertonic_lang") or "en").strip().lower() or "en"
+        if lang != "en":
+            parts.append(
+                f"Reply to the user primarily in language code {lang!r} "
+                "(match their language when possible). Keep answers short for voice.",
+            )
+        ref = (reference or "").strip()
+        if ref:
+            parts.append(ref)
+        return "\n\n".join(parts)
+
+    async def _warm_knowledge_cache(self) -> None:
+        from pathlib import Path
+
+        root_raw, selection, catalog = self._knowledge_paths()
+        mode = str(self.config.get("knowledge_mode") or "off")
+        if mode == "off" or not root_raw or not catalog:
+            return
+        file_ids = resolve_active_file_ids(mode, selection, catalog)
+        if not file_ids:
+            return
+        by_id = {str(e["id"]): e for e in catalog if e.get("id")}
+
+        def _load_one(fid: str) -> tuple[str, str]:
+            entry = by_id.get(fid)
+            if not entry:
+                return fid, ""
+            from live_voice.knowledge.context import _read_full_text
+
+            text = _read_full_text(
+                Path(root_raw),
+                entry,
+                text_cache=self._knowledge_text_cache,
+                prefer_fast=True,
+            )
+            return fid, text
+
+        results = await asyncio.gather(
+            *[asyncio.to_thread(_load_one, fid) for fid in file_ids],
+            return_exceptions=True,
+        )
+        loaded = 0
+        for item in results:
+            if isinstance(item, tuple) and item[1].strip():
+                loaded += 1
+        logger.info(
+            "Knowledge cache warm | mode=%s files=%d loaded=%d",
+            mode,
+            len(file_ids),
+            loaded,
+        )
+        if loaded == 0:
+            await self.send_json(
+                server_event(
+                    "notice",
+                    message=(
+                        "Reference knowledge is on but no text could be read from the selected "
+                        "file(s). Rebuild index on the Knowledge page or re-import the PDF."
+                    ),
+                ),
+            )
 
     async def _respond_to_user_turn(
         self,
@@ -517,11 +754,35 @@ class VoiceSession:
             await self.send_json(error_event(str(exc), code=exc.code))
             return
 
+        reference = await self._build_reference_knowledge(text or display)
+        system_prompt = self._compose_system_prompt(reference)
+        if reference:
+            logger.info(
+                "Turn %s | Injected reference knowledge (%d chars, mode=%s)",
+                turn,
+                len(reference),
+                self.config.get("knowledge_mode"),
+            )
+        elif str(self.config.get("knowledge_mode") or "off") != "off":
+            logger.warning(
+                "Turn %s | knowledge_mode=%s but reference block empty (check selection and files on disk)",
+                turn,
+                self.config.get("knowledge_mode"),
+            )
+            await self.send_json(
+                server_event(
+                    "notice",
+                    message=(
+                        "Could not load reference knowledge for this turn. "
+                        "Check the file exists, then Rebuild index on the Knowledge page."
+                    ),
+                ),
+            )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": str(self.config.get("system_prompt", ""))},
-            *self._messages,
-            {"role": "user", "content": user_content},
+            {"role": "system", "content": system_prompt},
         ]
+        messages.extend(self._messages)
+        messages.append({"role": "user", "content": user_content})
 
         self._assistant_talking = True
         await self.send_json(server_event("state", state="speaking"))

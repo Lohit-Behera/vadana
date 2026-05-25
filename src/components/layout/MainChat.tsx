@@ -11,7 +11,12 @@ import {
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { TranscriptThread } from "@/components/chat/TranscriptThread";
+import { ChatKnowledgePicker } from "@/components/chat/ChatKnowledgePicker";
+import { ChatSystemPromptEditor } from "@/components/chat/ChatSystemPromptEditor";
+import { ChatModelPicker } from "@/components/chat/ChatModelPicker";
+import { ChatTtsPicker } from "@/components/chat/ChatTtsPicker";
 import { ChatHeader } from "@/components/layout/ChatHeader";
+import type { useChats } from "@/hooks/useChats";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,9 +33,10 @@ type Voice = ReturnType<typeof useVoiceSession>;
 
 type Props = {
   v: Voice;
+  chats: ReturnType<typeof useChats>;
 };
 
-export function MainChat({ v }: Props) {
+export function MainChat({ v, chats }: Props) {
   const [typedMessage, setTypedMessage] = useState("");
   const [pendingFiles, setPendingFiles] = useState<PendingAttachment[]>([]);
   const [staging, setStaging] = useState(false);
@@ -96,12 +102,18 @@ export function MainChat({ v }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <ChatHeader
-        uiState={v.uiState}
-        model={v.model}
-        llmProvider={v.llmProvider}
-        contextUsage={v.contextUsage}
-      />
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4">
+        <ChatHeader
+          uiState={v.uiState}
+          modelLine={<ChatModelPicker chats={chats} v={v} />}
+          contextUsage={v.contextUsage}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <ChatTtsPicker chats={chats} v={v} />
+          <ChatSystemPromptEditor chats={chats} v={v} />
+          <ChatKnowledgePicker chats={chats} v={v} />
+        </div>
+      </div>
 
       {v.error && (
         <Alert variant="destructive" className="mx-4 mt-3 shrink-0">

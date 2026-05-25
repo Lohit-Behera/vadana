@@ -199,6 +199,97 @@ export async function appendMessage(
   return id;
 }
 
+/** Per-chat system prompt addon (extends global Settings prompt, does not replace it). */
+export async function getChatSystemPrompt(chatId: string): Promise<string> {
+  const db = await getDb();
+  const rows = await db.select<{ chat_system_prompt: string }[]>(
+    "SELECT chat_system_prompt FROM chats WHERE id = $1",
+    [chatId],
+  );
+  return rows[0]?.chat_system_prompt ?? "";
+}
+
+export async function setChatSystemPrompt(
+  chatId: string,
+  prompt: string,
+): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "UPDATE chats SET chat_system_prompt = $1, updated_at = $2 WHERE id = $3",
+    [prompt, Date.now(), chatId],
+  );
+}
+
+export type ChatTtsConfig = {
+  voice: string;
+  lang: string;
+};
+
+/** Empty voice/lang = use global Settings for this chat. */
+export async function getChatTts(chatId: string): Promise<ChatTtsConfig> {
+  const db = await getDb();
+  const rows = await db.select<
+    { chat_supertonic_voice: string; chat_supertonic_lang: string }[]
+  >(
+    "SELECT chat_supertonic_voice, chat_supertonic_lang FROM chats WHERE id = $1",
+    [chatId],
+  );
+  const row = rows[0];
+  return {
+    voice: row?.chat_supertonic_voice ?? "",
+    lang: row?.chat_supertonic_lang ?? "",
+  };
+}
+
+export async function setChatTts(
+  chatId: string,
+  tts: ChatTtsConfig,
+): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "UPDATE chats SET chat_supertonic_voice = $1, chat_supertonic_lang = $2, updated_at = $3 WHERE id = $4",
+    [tts.voice, tts.lang, Date.now(), chatId],
+  );
+}
+
+export type ChatLlmConfig = {
+  provider: string;
+  baseUrl: string;
+  model: string;
+};
+
+/** Empty fields = use global Settings for this chat. */
+export async function getChatLlm(chatId: string): Promise<ChatLlmConfig> {
+  const db = await getDb();
+  const rows = await db.select<
+    {
+      chat_llm_provider: string;
+      chat_llm_base_url: string;
+      chat_model: string;
+    }[]
+  >(
+    "SELECT chat_llm_provider, chat_llm_base_url, chat_model FROM chats WHERE id = $1",
+    [chatId],
+  );
+  const row = rows[0];
+  return {
+    provider: row?.chat_llm_provider ?? "",
+    baseUrl: row?.chat_llm_base_url ?? "",
+    model: row?.chat_model ?? "",
+  };
+}
+
+export async function setChatLlm(
+  chatId: string,
+  llm: ChatLlmConfig,
+): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    "UPDATE chats SET chat_llm_provider = $1, chat_llm_base_url = $2, chat_model = $3, updated_at = $4 WHERE id = $5",
+    [llm.provider, llm.baseUrl, llm.model, Date.now(), chatId],
+  );
+}
+
 export async function getChatTitle(chatId: string): Promise<string> {
   const db = await getDb();
   const rows = await db.select<{ title: string }[]>(

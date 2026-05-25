@@ -16,6 +16,12 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { SupertonicLangSelect } from "@/components/tts/SupertonicLangSelect";
+import { SupertonicVoiceSelect } from "@/components/tts/SupertonicVoiceSelect";
+import {
+  normalizeSupertonicLang,
+  normalizeSupertonicVoice,
+} from "@/lib/supertonicOptions";
 
 type Voice = ReturnType<typeof useVoiceSession>;
 
@@ -327,26 +333,22 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
       {show("tts") && (
       <Section title="Text-to-speech" summary="Supertonic / Piper" defaultOpen>
         <div className="grid gap-3 sm:grid-cols-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="stv">Voice</Label>
-            <Input
-              id="stv"
-              value={v.supertonicVoice}
-              onChange={(e) => v.setSupertonicVoice(e.target.value)}
-              disabled={disabled}
-              placeholder="M1"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="stl">Lang</Label>
-            <Input
-              id="stl"
-              value={v.supertonicLang}
-              onChange={(e) => v.setSupertonicLang(e.target.value)}
-              disabled={disabled}
-              placeholder="en"
-            />
-          </div>
+          <SupertonicVoiceSelect
+            id="stv"
+            label="Voice"
+            value={normalizeSupertonicVoice(v.supertonicVoice)}
+            onValueChange={(val) => v.setSupertonicVoice(val)}
+            disabled={disabled}
+            className="space-y-1.5"
+          />
+          <SupertonicLangSelect
+            id="stl"
+            label="Lang"
+            value={normalizeSupertonicLang(v.supertonicLang)}
+            onValueChange={(val) => v.setSupertonicLang(val)}
+            disabled={disabled}
+            className="space-y-1.5"
+          />
           <div className="space-y-1.5 sm:col-span-1">
             <Label htmlFor="stm">Model id</Label>
             <Input

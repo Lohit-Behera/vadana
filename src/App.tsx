@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/layout/AppShell";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { MainChat } from "@/components/layout/MainChat";
+import { KnowledgePage } from "@/components/knowledge/KnowledgePage";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ import { getChatMessages } from "@/lib/chatsDb";
 import { useChats } from "@/hooks/useChats";
 import { useVoiceSession } from "@/hooks/useVoiceSession";
 
-type AppView = "chat" | "settings";
+type AppView = "chat" | "settings" | "knowledge";
 
 export default function App() {
   const chats = useChats();
@@ -24,8 +25,14 @@ export default function App() {
       getHistoryForBackend: chats.getHistoryForBackend,
       persistTurn: chats.persistTurn,
       ensureActiveChat: chats.ensureActiveChat,
+      getKnowledgeForBackend: chats.getKnowledgeForBackend,
     }),
-    [chats.getHistoryForBackend, chats.persistTurn, chats.ensureActiveChat],
+    [
+      chats.getHistoryForBackend,
+      chats.persistTurn,
+      chats.ensureActiveChat,
+      chats.getKnowledgeForBackend,
+    ],
   );
   const v = useVoiceSession(chatBridge);
   const [view, setView] = useState<AppView>("chat");
@@ -93,6 +100,10 @@ export default function App() {
     setView("settings");
   }, []);
 
+  const handleOpenKnowledge = useCallback(() => {
+    setView("knowledge");
+  }, []);
+
   if (!v.isDesktop) {
     return (
       <main className="container mx-auto max-w-lg p-6">
@@ -115,6 +126,7 @@ export default function App() {
           chats={chats}
           v={v}
           onOpenSettings={handleOpenSettings}
+          onOpenKnowledge={handleOpenKnowledge}
           onSelectChat={(id) => void handleSelectChat(id)}
           onNewChat={() => void handleNewChat()}
         />
@@ -122,6 +134,8 @@ export default function App() {
     >
       {view === "settings" ? (
         <SettingsPage v={v} onBack={() => setView("chat")} />
+      ) : view === "knowledge" ? (
+        <KnowledgePage v={v} onBack={() => setView("chat")} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           {!readinessOk && v.preflight && (
@@ -168,7 +182,7 @@ export default function App() {
               </Button>
             </Alert>
           )}
-          <MainChat v={v} />
+          <MainChat v={v} chats={chats} />
         </div>
       )}
     </AppShell>

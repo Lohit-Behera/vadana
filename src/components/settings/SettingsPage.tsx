@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, HardDrive, KeyRound } from "lucide-react";
+import { ArrowLeft, HardDrive, KeyRound, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+import { LlmModelSelect } from "@/components/llm/LlmModelSelect";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { listLlmModels } from "@/lib/llmModels";
+import { defaultBaseUrlForProvider } from "@/lib/llmProviders";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   deleteProviderApiKey,
@@ -34,6 +37,8 @@ export function SettingsPage({ v, onBack }: Props) {
   const disabled = v.sessionActive;
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [keySaved, setKeySaved] = useState(false);
+  const [modelOptions, setModelOptions] = useState<{ id: string }[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
 
   const refreshKeyStatus = useCallback(async () => {
     if (providerNeedsApiKey(v.llmProvider)) {
@@ -47,6 +52,35 @@ export function SettingsPage({ v, onBack }: Props) {
     void refreshKeyStatus();
     setApiKeyDraft("");
   }, [refreshKeyStatus]);
+
+  useEffect(() => {
+    setModelOptions([]);
+  }, [v.llmProvider, v.lmBaseUrl]);
+
+  const fetchModels = useCallback(async () => {
+    setFetchingModels(true);
+    try {
+      const list = await listLlmModels({
+        provider: v.llmProvider,
+        baseUrl: v.lmBaseUrl.trim() || defaultBaseUrlForProvider(v.llmProvider),
+      });
+      setModelOptions(list.map((m) => ({ id: m.id })));
+      if (list.length === 0) {
+        toast.message("No models returned", {
+          description: "Check that the provider is running and the base URL is correct.",
+        });
+      } else {
+        toast.success(`Loaded ${list.length} models`);
+      }
+    } catch (err) {
+      setModelOptions([]);
+      toast.error("Could not fetch models", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setFetchingModels(false);
+    }
+  }, [v.llmBaseUrl, v.llmProvider]);
 
   const persistNow = useCallback(async () => {
     await saveVoiceSettings({
@@ -138,13 +172,37 @@ export function SettingsPage({ v, onBack }: Props) {
                 }
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="model-id">Model id</Label>
-              <Input
-                id="model-id"
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <Label htmlFor="model-select">Model</Label>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={disabled || fetchingModels}
+                  onClick={() => void fetchModels()}
+                >
+                  {fetchingModels ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-3.5" />
+                  )}
+                  Fetch models
+                </Button>
+              </div>
+              <LlmModelSelect
+                id="model-select"
                 value={v.model}
-                onChange={(e) => v.setModel(e.target.value)}
+                models={modelOptions}
+                globalModel={v.model}
                 disabled={disabled}
+                loading={fetchingModels}
+                placeholder={
+                  modelOptions.length > 0 ? "Select model" : "Fetch models from provider"
+                }
+                triggerClassName="w-full font-mono text-xs"
+                onValueChange={(id) => v.setModel(id)}
               />
             </div>
             {v.llmProvider === "lm_studio" && (

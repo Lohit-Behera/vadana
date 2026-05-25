@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ContextUsage } from "@/hooks/useVoiceSession";
 import { Badge } from "@/components/ui/badge";
 
@@ -18,23 +19,19 @@ function formatTokens(n: number): string {
 
 type Props = {
   uiState: string;
-  model: string;
-  llmProvider: string;
+  modelLine?: ReactNode;
   contextUsage: ContextUsage | null;
 };
 
-export function ChatHeader({ uiState, model, llmProvider, contextUsage }: Props) {
+export function ChatHeader({ uiState, modelLine, contextUsage }: Props) {
   const used = contextUsage?.totalTokens ?? 0;
   const inUseLabel =
     used > 0 ? `${formatTokens(used)} tokens` : "—";
 
   return (
-    <header className="border-b px-4 py-3">
+    <header className="min-w-0 flex-1 py-1">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{model || "Model"}</span>
-          <span className="text-muted-foreground text-xs">({llmProvider})</span>
-        </div>
+        <div className="min-w-0 flex-1">{modelLine}</div>
         <Badge variant={uiState === "error" ? "destructive" : "secondary"}>
           {STATE_LABEL[uiState] ?? uiState}
         </Badge>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 ClientMsgType = Literal[
     "config",
@@ -15,6 +15,7 @@ ClientMsgType = Literal[
     "ptt_up",
     "user_text",
     "user_message",
+    "knowledge_reindex",
 ]
 
 ServerMsgType = Literal[

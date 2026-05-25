@@ -15,6 +15,10 @@ import {
   type LlmProvider,
   type VoiceSettings,
 } from "@/lib/settings";
+import {
+  normalizeSupertonicLang,
+  normalizeSupertonicVoice,
+} from "@/lib/supertonicOptions";
 import type { UserTurnPayload } from "@/lib/chatsDb";
 import { settingsToVoiceConfig, voiceWsUrl } from "@/lib/voiceConfig";
 
@@ -84,10 +88,35 @@ export type UserMessagePayload = {
   attachments?: TranscriptAttachment[];
 };
 
+export type KnowledgeBackendPayload = {
+  mode: "off" | "all_enabled" | "selected";
+  selection: { folder_ids: string[]; file_ids: string[] };
+  catalog: {
+    id: string;
+    folder_id: string;
+    rel_path: string;
+    filename: string;
+    enabled: boolean;
+    folder_enabled: boolean;
+    char_count: number;
+  }[];
+  revision: number;
+  /** Per-chat addon; appended to global system_prompt on the backend. */
+  chat_system_prompt: string;
+  /** Per-chat TTS; empty = use global Settings. */
+  chat_supertonic_voice: string;
+  chat_supertonic_lang: string;
+  /** Per-chat LLM; empty = use global Settings. */
+  chat_llm_provider: string;
+  chat_llm_base_url: string;
+  chat_model: string;
+};
+
 export type ChatBridge = {
   getHistoryForBackend: () => Promise<{ role: string; content: string }[]>;
   persistTurn: (user: UserTurnPayload, assistantText: string) => Promise<void>;
   ensureActiveChat: () => Promise<string | null>;
+  getKnowledgeForBackend?: () => Promise<KnowledgeBackendPayload>;
 };
 
 export { DEFAULT_VOICE_SYSTEM_PROMPT };
@@ -196,8 +225,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       setPiperModel(s.piperModel);
       setWhisperModel(s.whisperModel);
       setVadBargeIn(s.vadBargeIn);
-      setSupertonicVoice(s.supertonicVoice);
-      setSupertonicLang(s.supertonicLang);
+      setSupertonicVoice(normalizeSupertonicVoice(s.supertonicVoice));
+      setSupertonicLang(normalizeSupertonicLang(s.supertonicLang));
       setSupertonicModel(s.supertonicModel);
       setSettingsLoaded(true);
     });
@@ -277,23 +306,71 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
         apiKey = "";
       }
     }
+    if (chatBridgeRef.current?.ensureActiveChat) {
+      await chatBridgeRef.current.ensureActiveChat();
+    }
     const chatHistory = chatBridgeRef.current
       ? await chatBridgeRef.current.getHistoryForBackend()
       : [];
     let attachmentsDir = "";
+    let knowledgeDir = "";
+    let knowledgeIndexDir = "";
     if (isTauri()) {
       try {
         attachmentsDir = await invoke<string>("get_attachments_dir");
       } catch {
         attachmentsDir = "";
       }
+      try {
+        const dirs = await invoke<{
+          knowledgeDir: string;
+          knowledgeIndexDir: string;
+        }>("get_knowledge_dirs");
+        knowledgeDir = dirs.knowledgeDir ?? "";
+        knowledgeIndexDir = dirs.knowledgeIndexDir ?? "";
+      } catch {
+        knowledgeDir = "";
+        knowledgeIndexDir = "";
+      }
     }
-    return settingsToVoiceConfig(s, { apiKey, chatHistory, attachmentsDir });
+    const knowledge = chatBridgeRef.current?.getKnowledgeForBackend
+      ? await chatBridgeRef.current.getKnowledgeForBackend()
+      : undefined;
+    return settingsToVoiceConfig(s, {
+      apiKey,
+      chatHistory,
+      attachmentsDir,
+      knowledgeDir,
+      knowledgeIndexDir,
+      knowledge: knowledge
+        ? {
+            mode: knowledge.mode,
+            selection: knowledge.selection,
+            catalog: knowledge.catalog,
+            revision: knowledge.revision,
+            chat_system_prompt: knowledge.chat_system_prompt,
+            chat_supertonic_voice: knowledge.chat_supertonic_voice,
+            chat_supertonic_lang: knowledge.chat_supertonic_lang,
+            chat_llm_provider: knowledge.chat_llm_provider,
+            chat_llm_base_url: knowledge.chat_llm_base_url,
+            chat_model: knowledge.chat_model,
+          }
+        : undefined,
+    });
   }, [currentSettings]);
 
   const sendConfig = useCallback(async () => {
-    sendJson(await buildVoiceConfig());
-  }, [buildVoiceConfig, sendJson]);
+    const cfg = await buildVoiceConfig();
+    const payload = JSON.stringify(cfg);
+    if (isTauri()) {
+      await sendVoiceBridge(payload);
+      return;
+    }
+    const w = wsRef.current;
+    if (w && w.readyState === WebSocket.OPEN) {
+      w.send(payload);
+    }
+  }, [buildVoiceConfig]);
 
   const pushServerState = useCallback((s: string | undefined) => {
     if (!s) return;
@@ -503,6 +580,9 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
         return;
       }
       setSessionActive(true);
+      if (chatBridgeRef.current?.ensureActiveChat) {
+        await chatBridgeRef.current.ensureActiveChat();
+      }
       await sendConfig();
       sendJson({ type: "start" });
       setUiState("listening");
@@ -624,8 +704,24 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
 
   const reloadSessionConfig = useCallback(async () => {
     if (!sessionActive) return;
-    await sendConfig();
-  }, [sessionActive, sendConfig]);
+    const cfg = await buildVoiceConfig();
+    const payload = JSON.stringify(cfg);
+    if (isTauri()) {
+      await sendVoiceBridge(payload);
+    } else {
+      const w = wsRef.current;
+      if (w && w.readyState === WebSocket.OPEN) {
+        w.send(payload);
+      }
+    }
+    toast.success("Session config updated", {
+      description: `LLM ${cfg.model} (${cfg.llm_provider}), TTS ${cfg.supertonic_voice || "default"} / ${cfg.supertonic_lang}`,
+    });
+  }, [sessionActive, buildVoiceConfig]);
+
+  const sendKnowledgeReindex = useCallback(() => {
+    sendJson({ type: "knowledge_reindex" });
+  }, [sendJson]);
 
   const loadTranscript = useCallback((lines: TranscriptLine[]) => {
     setTranscript(lines);
@@ -723,5 +819,6 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     loadTranscript,
     resetContextUsage,
     sendConfig,
+    sendKnowledgeReindex,
   };
 }

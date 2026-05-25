@@ -44,7 +44,98 @@ describe("settingsToVoiceConfig", () => {
       supertonic_lang: "hi",
       supertonic_model: "supertonic-3",
       attachments_dir: "",
+      knowledge_mode: "off",
+      knowledge_selection: { folder_ids: [], file_ids: [] },
+      knowledge_catalog: [],
+      knowledge_revision: 0,
+      knowledge_dir: "",
+      knowledge_index_dir: "",
+      chat_system_prompt: "",
     });
+  });
+
+  it("uses per-chat LLM override over global settings", () => {
+    const cfg = settingsToVoiceConfig(
+      { ...DEFAULT_VOICE_SETTINGS, model: "global-model", llmProvider: "lm_studio" },
+      {
+        knowledge: {
+          mode: "off",
+          selection: { folder_ids: [], file_ids: [] },
+          catalog: [],
+          revision: 0,
+          chat_llm_provider: "ollama",
+          chat_llm_base_url: "http://127.0.0.1:11434",
+          chat_model: "llama3",
+        },
+      },
+    );
+    expect(cfg.llm_provider).toBe("ollama");
+    expect(cfg.lm_base_url).toBe("http://127.0.0.1:11434");
+    expect(cfg.model).toBe("llama3");
+  });
+
+  it("uses per-chat TTS override over global settings", () => {
+    const cfg = settingsToVoiceConfig(
+      { ...DEFAULT_VOICE_SETTINGS, supertonicVoice: "F2", supertonicLang: "en" },
+      {
+        knowledge: {
+          mode: "off",
+          selection: { folder_ids: [], file_ids: [] },
+          catalog: [],
+          revision: 0,
+          chat_system_prompt: "",
+          chat_supertonic_voice: "M3",
+          chat_supertonic_lang: "hi",
+        },
+      },
+    );
+    expect(cfg.supertonic_voice).toBe("M3");
+    expect(cfg.supertonic_lang).toBe("hi");
+  });
+
+  it("falls back to global TTS when chat override empty", () => {
+    const cfg = settingsToVoiceConfig(
+      { ...DEFAULT_VOICE_SETTINGS, supertonicVoice: "F2", supertonicLang: "en" },
+      {
+        knowledge: {
+          mode: "off",
+          selection: { folder_ids: [], file_ids: [] },
+          catalog: [],
+          revision: 0,
+          chat_system_prompt: "",
+          chat_supertonic_voice: "",
+          chat_supertonic_lang: "",
+        },
+      },
+    );
+    expect(cfg.supertonic_voice).toBe("F2");
+    expect(cfg.supertonic_lang).toBe("en");
+  });
+
+  it("passes knowledge config when provided", () => {
+    const cfg = settingsToVoiceConfig(DEFAULT_VOICE_SETTINGS, {
+      knowledge: {
+        mode: "selected",
+        selection: { folder_ids: ["a"], file_ids: ["b"] },
+        catalog: [
+          {
+            id: "b",
+            folder_id: "a",
+            rel_path: "folders/a/x.md",
+            filename: "x.md",
+            enabled: true,
+            folder_enabled: true,
+            char_count: 10,
+          },
+        ],
+        revision: 2,
+        chat_system_prompt: "Be formal.",
+      },
+    });
+    expect(cfg.knowledge_mode).toBe("selected");
+    expect(cfg.chat_system_prompt).toBe("Be formal.");
+    expect(cfg.knowledge_revision).toBe(2);
+    expect(cfg.knowledge_catalog).toHaveLength(1);
   });
 
   it("passes attachments_dir when provided", () => {
@@ -52,6 +143,15 @@ describe("settingsToVoiceConfig", () => {
       attachmentsDir: "C:\\\\app\\\\attachments",
     });
     expect(cfg.attachments_dir).toBe("C:\\\\app\\\\attachments");
+  });
+
+  it("passes knowledge dirs when provided", () => {
+    const cfg = settingsToVoiceConfig(DEFAULT_VOICE_SETTINGS, {
+      knowledgeDir: "C:\\\\app\\\\knowledge",
+      knowledgeIndexDir: "C:\\\\app\\\\knowledge\\\\index",
+    });
+    expect(cfg.knowledge_dir).toBe("C:\\\\app\\\\knowledge");
+    expect(cfg.knowledge_index_dir).toBe("C:\\\\app\\\\knowledge\\\\index");
   });
 
   it("applies defaults for empty whisper and supertonic fields", () => {

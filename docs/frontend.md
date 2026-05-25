@@ -178,9 +178,14 @@ Desktop-only helpers for Supertonic weight prefetch:
 | `voice_ws_disconnect` | Close bridge thread |
 | `check_supertonic_model` | Query Supertonic cache on disk |
 | `download_supertonic_model` | Run `live_voice.download_supertonic` |
-| `get_protocol_version` | Protocol version (currently `3`) |
+| `get_protocol_version` | Protocol version (currently `4`) |
 | `stage_attachment` | Copy image/PDF into app data; returns path for `user_message` |
 | `get_attachments_dir` | Attachments directory used by the Python sidecar |
+| `get_knowledge_dirs` | Knowledge + index persist paths for the Python sidecar |
+| `ensure_knowledge_folder` | Create on-disk folder for a knowledge library id |
+| `import_knowledge_file` | Copy `.md`/`.pdf`/`.docx`/`.xlsx` into a library folder |
+| `delete_knowledge_file_on_disk` | Remove staged knowledge file by `rel_path` |
+| `rebuild_knowledge_index` | Rebuild LlamaIndex vector index from catalog JSON (no WebSocket session) |
 | `set_provider_api_key` / `get_provider_api_key` / `delete_provider_api_key` / `has_provider_api_key` | OS keychain for cloud LLM keys |
 
 See [backend/protocol.md](../backend/protocol.md) for WebSocket message shapes.
@@ -201,6 +206,12 @@ See [backend/protocol.md](../backend/protocol.md) for WebSocket message shapes.
 | `supertonicVoice` | `supertonic_voice` | e.g. `M1`; empty → Piper/pyttsx3 |
 | `supertonicLang` | `supertonic_lang` | ISO code, default `en` |
 | `supertonicModel` | `supertonic_model` | Default `supertonic-3` |
+| (per chat, SQLite) | `knowledge_mode` | `off` (default), `all_enabled`, or `selected` |
+| (per chat) | `knowledge_selection` | `{ folder_ids, file_ids }` when mode is `selected` |
+| (app library) | `knowledge_catalog` | Enabled files metadata from `knowledgeDb.ts` |
+| (bump on change) | `knowledge_revision` | Triggers sidecar reindex when incremented |
+
+**Knowledge UI:** Sidebar → **Knowledge** manages folders and imports. In chat, **Knowledge off / All knowledge / Selected** picker sets per-chat injection. Reference text is a separate system message (not the behavior `system_prompt`). **Rebuild index** runs a standalone Python job via `rebuild_knowledge_index` (no voice session required). Enable the folder and each file you want indexed.
 
 ## Testing
 
@@ -216,6 +227,7 @@ Tests live next to sources: `src/lib/*.test.ts`. Setup: `src/test/setup.ts` (jes
 | `errorMessages.test.ts` | Error code and heuristic mapping |
 | `settings.test.ts` | localStorage load/save/merge (browser mode) |
 | `voiceConfig.test.ts` | Config JSON mapping and defaults |
+| `knowledgeDb.test.ts` | Knowledge selection JSON shape |
 | `voiceBridge.test.ts` | Bridge invoke/listen (mocked Tauri) |
 | `utils.test.ts` | `cn()` |
 

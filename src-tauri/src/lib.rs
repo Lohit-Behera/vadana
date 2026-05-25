@@ -14,9 +14,11 @@ use tauri_plugin_sql::{Migration, MigrationKind};
 mod attachments;
 mod chat_title;
 mod keyring_store;
+mod knowledge;
+mod llm_models;
 
 const LIVE_VOICE_PORT: u16 = 8765;
-const PROTOCOL_VERSION: u32 = 3;
+const PROTOCOL_VERSION: u32 = 4;
 
 pub struct BackendState {
     pub child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
@@ -261,6 +263,8 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
 
     let backend_dir = backend_dir(&app)?;
     let attachments_dir = attachments::attachments_dir(&app)?;
+    let knowledge_dir = knowledge::knowledge_root(&app)?;
+    let knowledge_index_dir = knowledge::knowledge_index_dir(&app)?;
 
     let (mut rx, child) = app
         .shell()
@@ -271,6 +275,14 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         .env(
             "LIVE_VOICE_ATTACHMENTS_DIR",
             attachments_dir.to_string_lossy().to_string(),
+        )
+        .env(
+            "LIVE_VOICE_KNOWLEDGE_DIR",
+            knowledge_dir.to_string_lossy().to_string(),
+        )
+        .env(
+            "LIVE_VOICE_KNOWLEDGE_INDEX_DIR",
+            knowledge_index_dir.to_string_lossy().to_string(),
         )
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -700,6 +712,30 @@ pub fn run() {
                             sql: include_str!("../migrations/002_message_content.sql"),
                             kind: MigrationKind::Up,
                         },
+                        Migration {
+                            version: 3,
+                            description: "knowledge_base",
+                            sql: include_str!("../migrations/003_knowledge.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 4,
+                            description: "chat_system_prompt",
+                            sql: include_str!("../migrations/004_chat_system_prompt.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 5,
+                            description: "chat_supertonic_tts",
+                            sql: include_str!("../migrations/005_chat_tts.sql"),
+                            kind: MigrationKind::Up,
+                        },
+                        Migration {
+                            version: 6,
+                            description: "chat_llm",
+                            sql: include_str!("../migrations/006_chat_llm.sql"),
+                            kind: MigrationKind::Up,
+                        },
                     ],
                 )
                 .build(),
@@ -728,6 +764,12 @@ pub fn run() {
             chat_title::generate_chat_title,
             attachments::stage_attachment,
             attachments::get_attachments_dir,
+            knowledge::get_knowledge_dirs,
+            knowledge::ensure_knowledge_folder,
+            knowledge::import_knowledge_file,
+            knowledge::delete_knowledge_file_on_disk,
+            knowledge::rebuild_knowledge_index,
+            llm_models::list_llm_models,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

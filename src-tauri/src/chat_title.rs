@@ -226,10 +226,7 @@ pub fn generate_chat_title(
     } else {
         let (url, api_model, api_key): (String, String, Option<String>) = match prov.as_str() {
             "lm_studio" => (
-                format!(
-                    "{}/chat/completions",
-                    normalize_api_base(&lm_base_url)
-                ),
+                format!("{}/chat/completions", normalize_api_base(&lm_base_url)),
                 strip_model_prefix(raw_model, "lm_studio"),
                 Some("lm-studio".to_string()),
             ),
@@ -262,10 +259,7 @@ pub fn generate_chat_title(
                 )
             }
             _ => (
-                format!(
-                    "{}/chat/completions",
-                    normalize_api_base(&lm_base_url)
-                ),
+                format!("{}/chat/completions", normalize_api_base(&lm_base_url)),
                 strip_model_prefix(raw_model, "lm_studio"),
                 Some("lm-studio".to_string()),
             ),
@@ -281,12 +275,7 @@ pub fn generate_chat_title(
             });
         }
 
-        match openai_style_request(
-            &url,
-            &api_model,
-            api_key.as_deref(),
-            &snippet,
-        ) {
+        match openai_style_request(&url, &api_model, api_key.as_deref(), &snippet) {
             Ok((status, body)) => {
                 let title = serde_json::from_str::<Value>(&body)
                     .ok()

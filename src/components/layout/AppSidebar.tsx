@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import {
+  BookOpen,
   MessageSquarePlus,
   Search,
   Settings2,
@@ -39,6 +40,7 @@ type Chats = ReturnType<typeof useChats>;
 type Props = {
   chats: Chats;
   onOpenSettings: () => void;
+  onOpenKnowledge: () => void;
   onSelectChat: (chatId: string) => void;
   onNewChat: () => void;
 };
@@ -46,6 +48,7 @@ type Props = {
 export function AppSidebar({
   chats,
   onOpenSettings,
+  onOpenKnowledge,
   onSelectChat,
   onNewChat,
 }: Props) {
@@ -131,7 +134,16 @@ export function AppSidebar({
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="p-3">
+      <SidebarFooter className="flex flex-col gap-1 p-3">
+        <Button
+          type="button"
+          variant="ghost"
+          className="w-full justify-start gap-2"
+          onClick={onOpenKnowledge}
+        >
+          <BookOpen className="size-4" />
+          Knowledge
+        </Button>
         <Button
           type="button"
           variant="ghost"

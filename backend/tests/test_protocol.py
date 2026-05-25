@@ -5,7 +5,7 @@ def test_ready_event() -> None:
     ev = server_event("ready", port=8765, protocol_version=PROTOCOL_VERSION)
     assert ev["type"] == "ready"
     assert ev["port"] == 8765
-    assert ev["protocol_version"] == 3
+    assert ev["protocol_version"] == 4
 
 
 def test_context_usage_event() -> None:

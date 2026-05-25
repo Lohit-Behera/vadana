@@ -1,0 +1,3 @@
+ALTER TABLE chats ADD COLUMN chat_llm_provider TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN chat_llm_base_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE chats ADD COLUMN chat_model TEXT NOT NULL DEFAULT '';

@@ -1,0 +1,11 @@
+{
+  "version": "0.2.0-beta.1",
+  "notes": "Public beta — local voice assistant with Whisper, LiteLLM, and on-device TTS. Expect rough edges; feedback welcome on GitHub.",
+  "pub_date": "2026-05-27T00:00:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "REPLACE_WITH_SIGNATURE_FROM_RELEASE_WORKFLOW",
+      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.0-beta.1/Vadana_0.2.0-beta.1_x64-setup.exe"
+    }
+  }
+}

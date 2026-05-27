@@ -302,7 +302,7 @@ Workflow file: `.github/workflows/release.yml`
 |------------|---------|
 | `C:\Users\lohit\.tauri\vadana.key` | Private key — paste into GitHub secret (keep secret) |
 | `C:\Users\lohit\.tauri\vadana.key.pub` | Public key — already in `tauri.conf.json` |
-| Password | If `vadana.key` is encrypted, use the key passphrase in `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` |
+| Password | Optional. Set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` only if your key was generated with a passphrase. |
 
 #### Add repository secrets (GitHub UI)
 
@@ -311,7 +311,7 @@ Repo → **Settings** → **Secrets and variables** → **Actions** → **New re
 | Name (exact) | Secret value |
 |--------------|--------------|
 | `TAURI_SIGNING_PRIVATE_KEY` | **Entire contents** of `vadana.key` (one multiline block). Copy in PowerShell: `Get-Content "$env:USERPROFILE\.tauri\vadana.key" -Raw` then paste into the **Secret** box. |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Required when `vadana.key` is encrypted. If omitted, the release build may succeed but `.sig` updater files will not be generated. |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Optional. Add only when your key was generated with a passphrase. |
 
 Do not commit `vadana.key` to the repo.
 

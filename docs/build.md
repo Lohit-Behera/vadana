@@ -110,9 +110,10 @@ Outputs are under `src-tauri/target/release/bundle/`:
 ### 5. Optional: limit bundle formats
 
 ```bash
-pnpm tauri build -- --bundles msi,nsis          # Windows example
-pnpm tauri build -- --bundles dmg               # macOS example
-pnpm tauri build -- --bundles deb,appimage      # Linux example
+pnpm tauri build --bundles nsis                 # Windows (updater uses NSIS)
+pnpm tauri build --bundles msi nsis             # Stable versions only — MSI rejects tags like `0.2.0-beta.1`
+pnpm tauri build --bundles dmg                  # macOS example
+pnpm tauri build --bundles deb appimage         # Linux example
 ```
 
 ---

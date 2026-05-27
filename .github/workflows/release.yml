@@ -74,7 +74,7 @@ jobs:
         run: pnpm run sync-backend
 
       - name: Build signed installers
-        run: pnpm tauri build -- --bundles nsis,msi
+        run: pnpm tauri build --bundles nsis msi
 
       - name: Resolve release artifact paths
         id: artifacts

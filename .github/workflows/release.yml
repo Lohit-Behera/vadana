@@ -54,6 +54,16 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "Missing TAURI_SIGNING_PRIVATE_KEY repository secret."
           }
+          # Tauri signer keys are commonly base64-encoded encrypted blobs.
+          # If the key is encrypted, the password secret must be set or .sig generation fails.
+          try {
+            $decoded = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:TAURI_SIGNING_PRIVATE_KEY.Trim()))
+            if ($decoded -match "untrusted comment: rsign encrypted secret key" -and [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+              throw "TAURI_SIGNING_PRIVATE_KEY is encrypted; set TAURI_SIGNING_PRIVATE_KEY_PASSWORD repository secret."
+            }
+          } catch {
+            # Non-base64 keys (for example, file path values) are allowed.
+          }
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

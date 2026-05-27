@@ -11,10 +11,12 @@ export const LLM_PROVIDERS: LlmProviderOption[] = [
   { id: "anthropic", label: "Anthropic" },
   { id: "ollama", label: "Ollama" },
   { id: "groq", label: "Groq" },
+  { id: "openrouter", label: "OpenRouter" },
 ];
 
 export const LLM_DEFAULT_VALUE = "__default__";
 export const LLM_MODEL_DEFAULT_VALUE = "__model_default__";
+export const LLM_MODEL_CUSTOM_VALUE = "__custom__";
 
 export function toSelectModelValue(stored: string): string {
   const id = stored.trim();
@@ -33,6 +35,8 @@ export function defaultBaseUrlForProvider(provider: LlmProvider): string {
       return "https://api.openai.com/v1";
     case "groq":
       return "https://api.groq.com/openai/v1";
+    case "openrouter":
+      return "https://openrouter.ai/api/v1";
     case "anthropic":
       return "";
     default:
@@ -76,4 +80,15 @@ export function resolveEffectiveLlm(
 
 export function providerLabel(provider: LlmProvider): string {
   return LLM_PROVIDERS.find((p) => p.id === provider)?.label ?? provider;
+}
+
+/** Short label for toolbar (strips path prefix, caps length). */
+export function displayModelName(model: string, maxLen = 26): string {
+  const trimmed = model.trim();
+  if (!trimmed) return "Model";
+  const base = trimmed.includes("/")
+    ? (trimmed.split("/").pop() ?? trimmed)
+    : trimmed;
+  if (base.length <= maxLen) return base;
+  return `${base.slice(0, maxLen - 1)}…`;
 }

@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from supertonic.config import DEFAULT_MODEL_REVISION, get_model_repo
-from supertonic.loader import get_cache_dir, has_all_onnx_modules
+from supertonic.loader import has_all_onnx_modules
+
+from live_voice.models_paths import resolve_models_root, supertonic_model_dir
 
 # Use standard HTTP downloads. Xet needs a working hf_xet wheel; a broken/partial
 # install makes huggingface_hub think Xet is available and then fail mid-download.
@@ -22,9 +24,10 @@ def _emit(obj: dict[str, Any]) -> None:
     print(json.dumps(obj), flush=True)
 
 
-def check_model(model: str) -> dict[str, Any]:
+def check_model(model: str, models_root: str | None = None) -> dict[str, Any]:
     model = model.strip() or "supertonic-3"
-    cache = get_cache_dir(model)
+    root = resolve_models_root(models_root)
+    cache = supertonic_model_dir(root, model)
     present = has_all_onnx_modules(cache)
     return {
         "present": present,
@@ -60,9 +63,10 @@ def _json_tqdm_factory():
     return JsonTqdm
 
 
-def download_model_with_progress(model: str) -> int:
+def download_model_with_progress(model: str, models_root: str | None = None) -> int:
     model = model.strip() or "supertonic-3"
-    cache = get_cache_dir(model)
+    root = resolve_models_root(models_root)
+    cache = supertonic_model_dir(root, model)
 
     if has_all_onnx_modules(cache):
         _emit(
@@ -133,17 +137,23 @@ def main() -> int:
         default="supertonic-3",
         help='Model id, e.g. "supertonic-3"',
     )
+    parser.add_argument(
+        "--models-root",
+        default="",
+        help="Vadana models root (default: ~/vadana/models)",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check", action="store_true", help="Print JSON status and exit")
     group.add_argument("--download", action="store_true", help="Download with progress JSONL")
     args = parser.parse_args()
+    root_arg = args.models_root.strip() or None
 
     if args.check:
-        _emit({"type": "status", **check_model(args.model)})
+        _emit({"type": "status", **check_model(args.model, root_arg)})
         return 0
 
     if args.download:
-        return download_model_with_progress(args.model)
+        return download_model_with_progress(args.model, root_arg)
 
     return 1
 

@@ -16,8 +16,8 @@ class SileroStreamVAD:
         self,
         sample_rate: int = 16_000,
         threshold: float = 0.5,
-        min_silence_duration_ms: int = 400,
-        speech_pad_ms: int = 40,
+        min_silence_duration_ms: int = 1100,
+        speech_pad_ms: int = 100,
     ) -> None:
         if sample_rate != 16_000:
             raise ValueError("SileroStreamVAD currently supports 16 kHz only.")

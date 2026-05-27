@@ -95,6 +95,12 @@ def resolve_llm_params(
     if prov == "groq":
         litellm_model = raw_model if raw_model.startswith("groq/") else f"groq/{raw_model}"
         return LlmParams(model=litellm_model, api_base=None, api_key=key)
+    if prov == "openrouter":
+        litellm_model = (
+            raw_model if raw_model.startswith("openrouter/") else f"openrouter/{raw_model}"
+        )
+        base = _normalize_api_base(lm_base_url) if lm_base_url else "https://openrouter.ai/api/v1"
+        return LlmParams(model=litellm_model, api_base=base, api_key=key)
 
     # Unknown provider with a local base URL: default to native LM Studio routing.
     return LlmParams(

@@ -1,7 +1,12 @@
 import { invoke, isTauri } from "@/lib/tauri";
 import type { LlmProvider } from "@/lib/settings";
 
-const KEYCHAIN_PROVIDERS: LlmProvider[] = ["openai", "anthropic", "groq"];
+const KEYCHAIN_PROVIDERS: LlmProvider[] = [
+  "openai",
+  "anthropic",
+  "groq",
+  "openrouter",
+];
 
 export function providerNeedsApiKey(provider: LlmProvider): boolean {
   return KEYCHAIN_PROVIDERS.includes(provider);

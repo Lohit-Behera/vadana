@@ -24,7 +24,10 @@ import {
   type ChatRow,
   type UserTurnPayload,
 } from "@/lib/chatsDb";
-import { generateChatTitle } from "@/lib/generateChatTitle";
+import {
+  generateChatTitle,
+  sanitizeGeneratedTitle,
+} from "@/lib/generateChatTitle";
 import {
   getChatKnowledge,
   getKnowledgeCatalogForBackend,
@@ -158,8 +161,25 @@ export function useChats() {
     [maybeAutoTitleChat, refreshChats],
   );
 
+  const applyChatTitleIfNew = useCallback(
+    async (chatId: string, title: string) => {
+      if (!isTauri()) return;
+      const trimmed = sanitizeGeneratedTitle(title);
+      if (!trimmed || trimmed === "New chat") return;
+      const current = await getChatTitle(chatId);
+      if (current !== "New chat") return;
+      await updateChatTitle(chatId, trimmed);
+      await refreshChats();
+    },
+    [refreshChats],
+  );
+
   const persistTurn = useCallback(
-    async (user: UserTurnPayload, assistantText: string) => {
+    async (
+      user: UserTurnPayload,
+      assistantText: string,
+      chatTitle?: string,
+    ) => {
       if (!isTauri()) return;
       const chatId = await ensureActiveChat();
       if (!chatId) return;
@@ -171,12 +191,14 @@ export function useChats() {
         serialized.content_format,
       );
       await appendMessage(chatId, "assistant", assistantText);
+      if (chatTitle) {
+        await applyChatTitleIfNew(chatId, chatTitle);
+      }
       await refreshChats();
       const msgs = await getChatMessages(chatId);
       setMessages(msgs);
-      void maybeAutoTitleChat(chatId);
     },
-    [ensureActiveChat, maybeAutoTitleChat, refreshChats],
+    [applyChatTitleIfNew, ensureActiveChat, refreshChats],
   );
 
   const getHistoryForBackend = useCallback(async (): Promise<
@@ -271,11 +293,17 @@ export function useChats() {
     [ensureActiveChat],
   );
 
-  const removeChat = useCallback(
-    async (chatId: string) => {
-      if (!isTauri()) return;
-      await deleteChat(chatId);
-      if (activeChatIdRef.current === chatId) {
+  const removeChats = useCallback(
+    async (chatIds: string[]) => {
+      if (!isTauri() || chatIds.length === 0) return;
+      const unique = [...new Set(chatIds)];
+      for (const chatId of unique) {
+        await deleteChat(chatId);
+      }
+      if (
+        activeChatIdRef.current &&
+        unique.includes(activeChatIdRef.current)
+      ) {
         setActiveChatId(null);
         activeChatIdRef.current = null;
         setMessages([]);
@@ -283,6 +311,13 @@ export function useChats() {
       await refreshChats();
     },
     [refreshChats],
+  );
+
+  const removeChat = useCallback(
+    async (chatId: string) => {
+      await removeChats([chatId]);
+    },
+    [removeChats],
   );
 
   const renameChat = useCallback(
@@ -344,21 +379,20 @@ export function useChats() {
     updateChatSystemPrompt,
     getChatTts: useCallback(async (): Promise<ChatTtsConfig> => {
       if (!isTauri()) return { voice: "", lang: "" };
-      const chatId =
-        activeChatIdRef.current ?? (await ensureActiveChat());
+      const chatId = activeChatIdRef.current;
       if (!chatId) return { voice: "", lang: "" };
       return getChatTts(chatId);
     }, [activeChatId, ensureActiveChat]),
     updateChatTts,
     getChatLlm: useCallback(async (): Promise<ChatLlmConfig> => {
       if (!isTauri()) return { provider: "", baseUrl: "", model: "" };
-      const chatId =
-        activeChatIdRef.current ?? (await ensureActiveChat());
+      const chatId = activeChatIdRef.current;
       if (!chatId) return { provider: "", baseUrl: "", model: "" };
       return getChatLlm(chatId);
     }, [activeChatId, ensureActiveChat]),
     updateChatLlm,
     removeChat,
+    removeChats,
     renameChat,
     search,
   };

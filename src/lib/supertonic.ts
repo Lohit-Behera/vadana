@@ -18,13 +18,23 @@ export type SupertonicDownloadEvent = {
 
 export async function checkSupertonicModel(
   model: string,
+  modelsRoot?: string,
 ): Promise<SupertonicModelStatus | null> {
   if (!isTauri()) return null;
-  return invoke<SupertonicModelStatus>("check_supertonic_model", { model });
+  return invoke<SupertonicModelStatus>("check_supertonic_model", {
+    model,
+    modelsRoot: modelsRoot?.trim() || null,
+  });
 }
 
-export async function startSupertonicDownload(model: string): Promise<void> {
-  await invoke("download_supertonic_model", { model });
+export async function startSupertonicDownload(
+  model: string,
+  modelsRoot?: string,
+): Promise<void> {
+  await invoke("download_supertonic_model", {
+    model,
+    modelsRoot: modelsRoot?.trim() || null,
+  });
 }
 
 export function onSupertonicDownload(

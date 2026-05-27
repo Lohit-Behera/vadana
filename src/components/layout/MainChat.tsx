@@ -10,14 +10,9 @@ import {
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
-import { TranscriptThread } from "@/components/chat/TranscriptThread";
-import { ChatKnowledgePicker } from "@/components/chat/ChatKnowledgePicker";
-import { ChatSystemPromptEditor } from "@/components/chat/ChatSystemPromptEditor";
-import { ChatModelPicker } from "@/components/chat/ChatModelPicker";
-import { ChatTtsPicker } from "@/components/chat/ChatTtsPicker";
-import { ChatHeader } from "@/components/layout/ChatHeader";
+import { ChatTranscriptPanel } from "@/components/chat/ChatTranscriptPanel";
+import { ChatSessionToolbar } from "@/components/layout/ChatSessionToolbar";
 import type { useChats } from "@/hooks/useChats";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -44,7 +39,9 @@ export function MainChat({ v, chats }: Props) {
 
   const inSession = v.sessionActive;
   const isConnecting = v.uiState === "connecting";
-  const showComposer = inSession || isConnecting;
+  const showVoiceUi = inSession || isConnecting;
+  const hasHistory = v.transcript.length > 0;
+  const showEmptyStart = !showVoiceUi && !hasHistory;
 
   const clearPending = useCallback(() => {
     for (const p of pendingFiles) {
@@ -101,92 +98,80 @@ export function MainChat({ v, chats }: Props) {
   }, [typedMessage, pendingFiles, v, clearPending]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b px-4">
-        <ChatHeader
-          uiState={v.uiState}
-          modelLine={<ChatModelPicker chats={chats} v={v} />}
-          contextUsage={v.contextUsage}
-        />
-        <div className="flex flex-wrap items-center gap-2">
-          <ChatTtsPicker chats={chats} v={v} />
-          <ChatSystemPromptEditor chats={chats} v={v} />
-          <ChatKnowledgePicker chats={chats} v={v} />
-        </div>
-      </div>
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ChatSessionToolbar v={v} chats={chats} />
 
-      {v.error && (
-        <Alert variant="destructive" className="mx-4 mt-3 shrink-0">
-          <AlertDescription>{v.error}</AlertDescription>
-        </Alert>
-      )}
-
-      <TranscriptThread
-        transcript={v.transcript}
-        streamingAssistant={v.streamingAssistant}
-        streamingReasoning={v.streamingReasoning}
-        idleMessage={
-          showComposer
-            ? "Ready when you are. Start speaking or type below."
-            : "Press Start to begin a voice session."
-        }
-      />
-
-      <footer className="border-t p-4">
-        <div className="mx-auto flex max-w-3xl flex-col gap-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {!inSession && !isConnecting ? (
-              <>
-                <Button
-                  type="button"
-                  disabled={!v.canStart}
-                  onClick={() => void v.startSession()}
-                >
-                  <Play className="size-4" />
-                  Start
-                </Button>
-                {v.uiState === "error" && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    disabled={!v.canStart}
-                    onClick={() => void v.startSession()}
-                  >
-                    <RefreshCw className="size-4" />
-                    Retry
-                  </Button>
-                )}
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="secondary"
-                disabled={isConnecting}
-                onClick={() => void v.stopSession()}
-              >
-                <Square className="size-4" />
-                Stop
-              </Button>
-            )}
+      {showEmptyStart ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8">
+          <Button
+            type="button"
+            size="lg"
+            className="h-12 gap-2 rounded-full px-8 text-base shadow-lg shadow-primary/25"
+            disabled={!v.canStart}
+            onClick={() => void v.startSession()}
+          >
+            <Play className="size-5" />
+            Start
+          </Button>
+          {v.uiState === "error" && (
             <Button
               type="button"
-              variant="outline"
-              disabled={!inSession}
-              onClick={() => v.interrupt()}
+              variant="secondary"
+              size="lg"
+              className="rounded-full"
+              disabled={!v.canStart}
+              onClick={() => void v.startSession()}
             >
-              <OctagonX className="size-4" />
-              Interrupt
+              <RefreshCw className="size-4" />
+              Retry
             </Button>
+          )}
+        </div>
+      ) : (
+        <ChatTranscriptPanel
+          transcript={v.transcript}
+          streamingAssistant={v.streamingAssistant}
+          streamingReasoning={v.streamingReasoning}
+          uiState={v.uiState}
+          audioLevels={v.audioLevels}
+          sessionActive={showVoiceUi}
+          idleMessage="Ready when you are. Start speaking or type below."
+        />
+      )}
+
+      {showVoiceUi ? (
+      <footer className="glass-surface glass-hairline-t shrink-0 p-3 sm:p-4">
+        <div className="mx-auto flex max-w-3xl flex-col gap-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={isConnecting}
+              onClick={() => v.stopSessionKeepBackend()}
+            >
+              <Square className="size-4" />
+              Stop
+            </Button>
+            {inSession && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => v.interrupt()}
+              >
+                <OctagonX className="size-4" />
+                Interrupt
+              </Button>
+            )}
           </div>
 
-          {showComposer && (
+          {showVoiceUi && (
             <>
               {pendingFiles.length > 0 && (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2.5">
                   {pendingFiles.map((p) => (
                     <div
                       key={p.id}
-                      className="bg-muted/60 flex items-center gap-2 rounded-lg border px-2 py-1 text-xs"
+                      className="glass-surface flex items-center gap-2 rounded-xl px-2.5 py-1.5 text-xs"
                     >
                       {p.previewUrl ? (
                         <img
@@ -212,7 +197,7 @@ export function MainChat({ v, chats }: Props) {
                   ))}
                 </div>
               )}
-              <div className="bg-muted/40 flex gap-2 rounded-full border px-3 py-1">
+              <div className="glass-surface flex gap-2 rounded-full px-3.5 py-1.5">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -293,13 +278,37 @@ export function MainChat({ v, chats }: Props) {
             </Button>
           )}
 
-          {!inSession && v.preflight?.hard_ok && (
-            <p className="text-muted-foreground text-center text-xs">
-              ws://127.0.0.1:{v.wsPort} · Use headphones to reduce echo
-            </p>
-          )}
         </div>
       </footer>
+      ) : hasHistory ? (
+        <footer className="glass-surface glass-hairline-t shrink-0 p-3 sm:p-4">
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center justify-center gap-2">
+            <Button
+              type="button"
+              size="lg"
+              className="h-11 gap-2 rounded-full px-8 shadow-lg shadow-primary/25"
+              disabled={!v.canStart}
+              onClick={() => void v.startSession()}
+            >
+              <Play className="size-4" />
+              Start
+            </Button>
+            {v.uiState === "error" && (
+              <Button
+                type="button"
+                variant="secondary"
+                size="lg"
+                className="rounded-full"
+                disabled={!v.canStart}
+                onClick={() => void v.startSession()}
+              >
+                <RefreshCw className="size-4" />
+                Retry
+              </Button>
+            )}
+          </div>
+        </footer>
+      ) : null}
     </div>
   );
 }

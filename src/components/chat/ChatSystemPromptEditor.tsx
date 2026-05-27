@@ -3,6 +3,12 @@ import { MessageSquarePlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuLabel,
@@ -19,9 +25,10 @@ type Voice = ReturnType<typeof useVoiceSession>;
 type Props = {
   chats: Chats;
   v: Voice;
+  compact?: boolean;
 };
 
-export function ChatSystemPromptEditor({ chats, v }: Props) {
+export function ChatSystemPromptEditor({ chats, v, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saved, setSaved] = useState("");
@@ -57,19 +64,34 @@ export function ChatSystemPromptEditor({ chats, v }: Props) {
 
   const hasAddon = saved.trim().length > 0;
 
+  const tooltip = hasAddon
+    ? "Chat instructions (active)"
+    : "Add chat instructions";
+
+  const trigger = (
+    <Button
+      type="button"
+      variant={hasAddon ? "secondary" : "ghost"}
+      size={compact ? "icon-sm" : "sm"}
+      className={cn(compact ? "size-8" : "gap-1.5")}
+    >
+      <MessageSquarePlus className="size-3.5" />
+      {!compact ? (hasAddon ? "Chat instructions" : "Add chat instructions") : null}
+    </Button>
+  );
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant={hasAddon ? "default" : "outline"}
-          size="sm"
-          className="gap-1.5"
-        >
-          <MessageSquarePlus className="size-3.5" />
-          {hasAddon ? "Chat instructions" : "Add chat instructions"}
-        </Button>
-      </DropdownMenuTrigger>
+      {compact ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{tooltip}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      )}
       <DropdownMenuContent className="w-96" align="end">
         <DropdownMenuLabel>Chat instructions</DropdownMenuLabel>
         <DropdownMenuSeparator />

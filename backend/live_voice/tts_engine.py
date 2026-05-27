@@ -55,12 +55,18 @@ class TTSEngine:
         supertonic_voice: str | None = None,
         supertonic_lang: str = "en",
         supertonic_model: str = "supertonic-3",
+        supertonic_model_dir: str | Path | None = None,
     ) -> None:
         self.piper_model = piper_model or ""
         self._piper = shutil.which("piper")
         self.supertonic_voice = (supertonic_voice or "").strip()
         self.supertonic_lang = (supertonic_lang or "en").strip() or "en"
         self.supertonic_model = (supertonic_model or "supertonic-3").strip() or "supertonic-3"
+        self._supertonic_model_dir: Path | None = None
+        if supertonic_model_dir:
+            p = Path(supertonic_model_dir)
+            if p.is_dir():
+                self._supertonic_model_dir = p
         self._supertonic_tts: Any = None
         self._supertonic_style: Any = None
 
@@ -109,8 +115,17 @@ class TTSEngine:
         if self._supertonic_tts is not None:
             return self._supertonic_tts
         from supertonic import TTS
+        from supertonic.loader import has_all_onnx_modules
 
-        tts = TTS(model=self.supertonic_model, auto_download=True)
+        model_dir = self._supertonic_model_dir
+        auto_download = True
+        if model_dir is not None and has_all_onnx_modules(model_dir):
+            auto_download = False
+        tts = TTS(
+            model=self.supertonic_model,
+            model_dir=str(model_dir) if model_dir else None,
+            auto_download=auto_download,
+        )
         self._supertonic_style = tts.get_voice_style(self.supertonic_voice)
         self._supertonic_tts = tts
         _log.info(

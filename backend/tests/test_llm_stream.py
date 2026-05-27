@@ -31,6 +31,18 @@ def test_resolve_openai() -> None:
     assert p.api_key == "sk-test"
 
 
+def test_resolve_openrouter() -> None:
+    p = resolve_llm_params(
+        "openrouter",
+        "anthropic/claude-sonnet-4",
+        "https://openrouter.ai/api/v1",
+        "sk-or-test",
+    )
+    assert p.model == "openrouter/anthropic/claude-sonnet-4"
+    assert p.api_base == "https://openrouter.ai/api/v1"
+    assert p.api_key == "sk-or-test"
+
+
 def test_resolve_ollama() -> None:
     p = resolve_llm_params("ollama", "llama3", "http://127.0.0.1:11434", "")
     assert p.model == "ollama/llama3"

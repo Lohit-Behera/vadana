@@ -1,6 +1,5 @@
-import type { ReactNode } from "react";
 import type { ContextUsage } from "@/hooks/useVoiceSession";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 const STATE_LABEL: Record<string, string> = {
   disconnected: "Disconnected",
@@ -12,34 +11,53 @@ const STATE_LABEL: Record<string, string> = {
   error: "Error",
 };
 
+const STATE_DOT: Record<string, string> = {
+  disconnected: "bg-muted-foreground/50",
+  connecting: "bg-amber-400 animate-pulse",
+  idle: "bg-muted-foreground",
+  listening: "bg-primary animate-pulse",
+  thinking: "bg-amber-400 animate-pulse",
+  speaking: "bg-primary",
+  error: "bg-destructive",
+};
+
 function formatTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
-type Props = {
-  uiState: string;
-  modelLine?: ReactNode;
-  contextUsage: ContextUsage | null;
-};
-
-export function ChatHeader({ uiState, modelLine, contextUsage }: Props) {
-  const used = contextUsage?.totalTokens ?? 0;
-  const inUseLabel =
-    used > 0 ? `${formatTokens(used)} tokens` : "—";
+export function SessionStatusBadge({ uiState }: { uiState: string }) {
+  const label = STATE_LABEL[uiState] ?? uiState;
+  const dot = STATE_DOT[uiState] ?? "bg-muted-foreground";
 
   return (
-    <header className="min-w-0 flex-1 py-1">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">{modelLine}</div>
-        <Badge variant={uiState === "error" ? "destructive" : "secondary"}>
-          {STATE_LABEL[uiState] ?? uiState}
-        </Badge>
-      </div>
-      <div className="text-muted-foreground mt-2 flex justify-between text-xs tabular-nums">
-        <span>Context in use</span>
-        <span>{inUseLabel}</span>
-      </div>
-    </header>
+    <span
+      className={cn(
+        "border-border/60 bg-background/40 inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] leading-none",
+        uiState === "error" && "border-destructive/40 text-destructive",
+      )}
+      title={label}
+    >
+      <span className={cn("size-1.5 shrink-0 rounded-full", dot)} aria-hidden />
+      <span className="hidden sm:inline">{label}</span>
+    </span>
+  );
+}
+
+export function ContextMeter({
+  contextUsage,
+}: {
+  contextUsage: ContextUsage | null;
+}) {
+  const used = contextUsage?.totalTokens ?? 0;
+  if (used <= 0) return null;
+
+  return (
+    <span
+      className="text-muted-foreground hidden min-w-0 truncate text-[11px] tabular-nums md:inline"
+      title="Context tokens in use"
+    >
+      {formatTokens(used)} ctx
+    </span>
   );
 }

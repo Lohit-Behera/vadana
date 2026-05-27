@@ -3,6 +3,13 @@ import { BookOpen } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuLabel,
@@ -24,9 +31,10 @@ type Voice = ReturnType<typeof useVoiceSession>;
 type Props = {
   chats: Chats;
   v: Voice;
+  compact?: boolean;
 };
 
-export function ChatKnowledgePicker({ chats, v }: Props) {
+export function ChatKnowledgePicker({ chats, v, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<KnowledgeMode>("off");
   const [folderIds, setFolderIds] = useState<string[]>([]);
@@ -136,19 +144,35 @@ export function ChatKnowledgePicker({ chats, v }: Props) {
     [allFiles, fileIds, folderIds, persist],
   );
 
+  const active = mode !== "off";
+
+  const trigger = (
+    <Button
+      type="button"
+      variant={active ? "secondary" : "ghost"}
+      size={compact ? "icon-sm" : "sm"}
+      className={cn("relative", compact ? "size-8" : "gap-1.5")}
+    >
+      <BookOpen className="size-3.5" />
+      {!compact ? label : null}
+      {compact && active ? (
+        <span className="bg-primary absolute top-1 right-1 size-1.5 rounded-full" />
+      ) : null}
+    </Button>
+  );
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant={mode === "off" ? "outline" : "default"}
-          size="sm"
-          className="gap-1.5"
-        >
-          <BookOpen className="size-3.5" />
-          {label}
-        </Button>
-      </DropdownMenuTrigger>
+      {compact ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{label}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      )}
       <DropdownMenuContent className="w-80" align="start">
         <DropdownMenuLabel>Reference knowledge</DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -163,56 +187,65 @@ export function ChatKnowledgePicker({ chats, v }: Props) {
           </p>
 
           <div className="max-h-48 space-y-2 overflow-y-auto">
-            {folders.map((folder) => (
-              <div key={folder.id}>
-                <label className="flex items-center gap-2 text-sm font-medium">
-                  <input
-                    type="checkbox"
-                    checked={
-                      mode === "selected" &&
-                      (folderIds.includes(folder.id) ||
-                        allFiles
-                          .filter((f) => f.folderId === folder.id)
-                          .every((f) => fileIds.includes(f.id)))
-                    }
-                    disabled={mode === "all_enabled"}
-                    onChange={(e) => toggleFolder(folder.id, e.target.checked)}
-                  />
-                  {folder.name}
-                </label>
-                <ul className="ml-5 mt-1 space-y-1">
-                  {allFiles
+            {folders.map((folder) => {
+              const folderChecked =
+                mode === "selected" &&
+                (folderIds.includes(folder.id) ||
+                  allFiles
                     .filter((f) => f.folderId === folder.id)
-                    .map((file) => (
-                      <li key={file.id}>
-                        <label className="flex items-center gap-2 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={mode === "selected" && fileIds.includes(file.id)}
-                            disabled={mode === "all_enabled"}
-                            onChange={(e) =>
-                              toggleFile(file.id, folder.id, e.target.checked)
-                            }
-                          />
-                          <span className="truncate">{file.filename}</span>
-                        </label>
-                      </li>
-                    ))}
-                </ul>
-              </div>
-            ))}
+                    .every((f) => fileIds.includes(f.id)));
+              return (
+                <div key={folder.id}>
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id={`knowledge-folder-${folder.id}`}
+                      checked={folderChecked}
+                      disabled={mode === "all_enabled"}
+                      onCheckedChange={(checked) =>
+                        toggleFolder(folder.id, checked === true)
+                      }
+                    />
+                    <label
+                      htmlFor={`knowledge-folder-${folder.id}`}
+                      className="cursor-pointer text-sm font-medium leading-none"
+                    >
+                      {folder.name}
+                    </label>
+                  </div>
+                  <ul className="ml-6 mt-1.5 space-y-1.5">
+                    {allFiles
+                      .filter((f) => f.folderId === folder.id)
+                      .map((file) => (
+                        <li key={file.id}>
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id={`knowledge-file-${file.id}`}
+                              checked={
+                                mode === "selected" && fileIds.includes(file.id)
+                              }
+                              disabled={mode === "all_enabled"}
+                              onCheckedChange={(checked) =>
+                                toggleFile(file.id, folder.id, checked === true)
+                              }
+                            />
+                            <label
+                              htmlFor={`knowledge-file-${file.id}`}
+                              className="text-muted-foreground cursor-pointer truncate text-xs leading-none"
+                            >
+                              {file.filename}
+                            </label>
+                          </div>
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              );
+            })}
           </div>
 
           {folders.length === 0 && (
             <p className="text-muted-foreground text-xs">
               Add documents in Knowledge from the sidebar.
-            </p>
-          )}
-
-          {mode === "off" && allFiles.length > 0 && (
-            <p className="text-amber-600 text-xs dark:text-amber-400">
-              Knowledge is off — check your resume file (or turn on Use all enabled),
-              then ask again.
             </p>
           )}
         </div>

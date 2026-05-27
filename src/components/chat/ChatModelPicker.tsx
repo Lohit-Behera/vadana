@@ -22,14 +22,17 @@ import { LlmModelSelect } from "@/components/llm/LlmModelSelect";
 import { listLlmModels } from "@/lib/llmModels";
 import {
   LLM_DEFAULT_VALUE,
+  LLM_MODEL_CUSTOM_VALUE,
   LLM_PROVIDERS,
   defaultBaseUrlForProvider,
   fromSelectModelValue,
   providerLabel,
+  displayModelName,
   resolveEffectiveLlm,
   toSelectModelValue,
   type EffectiveLlmConfig,
 } from "@/lib/llmProviders";
+import { cn } from "@/lib/utils";
 import type { LlmProvider } from "@/lib/settings";
 import type { useChats } from "@/hooks/useChats";
 import type { useVoiceSession } from "@/hooks/useVoiceSession";
@@ -52,6 +55,8 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
   );
   const [models, setModels] = useState<{ id: string }[]>([]);
   const [fetching, setFetching] = useState(false);
+  const [customModelPicker, setCustomModelPicker] = useState(false);
+  const [customModelText, setCustomModelText] = useState("");
   const [effective, setEffective] = useState<EffectiveLlmConfig>({
     provider: v.llmProvider,
     baseUrl: v.lmBaseUrl,
@@ -159,12 +164,20 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
       const stored = {
         provider: providerSel === LLM_DEFAULT_VALUE ? "" : providerSel,
         baseUrl: baseUrl.trim(),
-        model: fromSelectModelValue(modelValue),
+        model:
+          modelOverride === LLM_MODEL_CUSTOM_VALUE || customModelPicker
+            ? customModelText.trim()
+            : fromSelectModelValue(modelValue),
       };
       await chats.ensureActiveChat();
       await chats.updateChatLlm(stored);
       setModelSel(toSelectModelValue(stored.model));
       const eff = publishEffective(stored);
+      // Keep global Settings in sync with the last model chosen in-chat.
+      // (Global settings are persisted by `useVoiceSession`.)
+      v.setLlmProvider(eff.provider);
+      v.setLmBaseUrl(eff.baseUrl);
+      v.setModel(eff.model);
       if (v.sessionActive) {
         await v.reloadSessionConfig();
         toast.success("Model applied to session", {
@@ -176,38 +189,39 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
         });
       }
     },
-    [baseUrl, chats, modelSel, providerSel, publishEffective, v],
+    [baseUrl, chats, customModelPicker, customModelText, modelSel, providerSel, publishEffective, v],
   );
 
   return (
     <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
-        <button
+        <Button
           type="button"
-          className="hover:text-foreground text-left text-sm font-medium transition-colors"
+          variant="outline"
+          size="sm"
+          className={cn(
+            "h-8 max-w-[min(100%,13rem)] gap-1.5 px-2 font-normal sm:max-w-[16rem]",
+            hasOverride && "border-primary/40",
+          )}
+          title={`${effective.model} (${providerLabel(effective.provider)})`}
         >
-          <span className="inline-flex items-center gap-1.5">
-            <Bot className="text-muted-foreground size-3.5 shrink-0" />
-            {effective.model || "Model"}
-            <span className="text-muted-foreground font-normal">
-              ({providerLabel(effective.provider)})
-            </span>
-            {hasOverride ? (
-              <span className="text-muted-foreground text-[10px] uppercase tracking-wide">
-                chat
-              </span>
-            ) : null}
+          <Bot className="text-muted-foreground size-3.5 shrink-0" />
+          <span className="truncate">
+            {displayModelName(effective.model)}
           </span>
-        </button>
+          <span className="bg-muted text-muted-foreground hidden shrink-0 rounded px-1 py-px text-[10px] leading-none sm:inline">
+            {providerLabel(effective.provider)}
+          </span>
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        className="w-[min(24rem,calc(100vw-2rem))]"
+        className="w-[min(24rem,calc(100vw-2rem))] p-2"
         align="start"
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <DropdownMenuLabel>Model (this chat)</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        <div className="space-y-3 px-2 py-1">
+        <div className="space-y-4 px-2 py-2">
           <p className="text-muted-foreground text-xs">
             Choose a provider, fetch models, then pick one from the list.
             Empty fields use Settings defaults.
@@ -217,7 +231,6 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
             <Label>Provider</Label>
             <Select
               value={providerSel}
-              modal={false}
               onValueChange={(val) => {
                 setProviderSel(val);
                 setModels([]);
@@ -246,7 +259,7 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
             <Label htmlFor="chat-llm-base">Base URL</Label>
             <Input
               id="chat-llm-base"
-              className="h-8 text-xs"
+              className="h-9 text-xs"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               placeholder={resolvedBaseUrl}
@@ -274,19 +287,48 @@ export function ChatModelPicker({ chats, v, onEffectiveLlm }: Props) {
           <LlmModelSelect
             id="chat-model-select"
             label="Model"
-            value={modelSel}
+            value={customModelPicker ? LLM_MODEL_CUSTOM_VALUE : modelSel}
             models={models}
             globalModel={v.model}
             allowDefault
+            allowCustom
+            customModelId={customModelPicker ? customModelText : fromSelectModelValue(modelSel)}
+            onCustomModelIdChange={(text) => {
+              setCustomModelText(text);
+              setCustomModelPicker(true);
+              setModelSel(LLM_MODEL_CUSTOM_VALUE);
+            }}
+            customPlaceholder={
+              resolvedProvider === "openrouter"
+                ? "e.g. anthropic/claude-sonnet-4"
+                : "Paste model id"
+            }
             loading={fetching}
             placeholder={models.length > 0 ? "Select model" : "Fetch models first"}
             size="sm"
             triggerClassName="w-full font-mono text-xs"
             onValueChange={(val) => {
-              setModelSel(val);
-              void persist(val);
+              if (val === LLM_MODEL_CUSTOM_VALUE) {
+                setCustomModelPicker(true);
+                setModelSel(LLM_MODEL_CUSTOM_VALUE);
+              } else {
+                setCustomModelPicker(false);
+                setModelSel(val);
+                void persist(val);
+              }
             }}
           />
+          {customModelPicker && (
+            <Button
+              type="button"
+              size="sm"
+              className="w-full"
+              disabled={!customModelText.trim()}
+              onClick={() => void persist(LLM_MODEL_CUSTOM_VALUE)}
+            >
+              Apply custom model
+            </Button>
+          )}
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

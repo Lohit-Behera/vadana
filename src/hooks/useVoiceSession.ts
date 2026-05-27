@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { toast } from "sonner";
 import { friendlyErrorMessage } from "@/lib/errorMessages";
 import { invoke, isTauri, listen } from "@/lib/tauri";
@@ -20,6 +21,7 @@ import {
   normalizeSupertonicVoice,
 } from "@/lib/supertonicOptions";
 import type { UserTurnPayload } from "@/lib/chatsDb";
+import { smoothAudioLevel } from "@/lib/audioLevel";
 import { settingsToVoiceConfig, voiceWsUrl } from "@/lib/voiceConfig";
 
 export type VoiceUiState =
@@ -73,6 +75,14 @@ type ServerMsg = {
   max_context_tokens?: number;
   percent?: number;
   user_display?: string;
+  chat_title?: string;
+  source?: string;
+  level?: number;
+};
+
+export type AudioLevels = {
+  mic: number;
+  tts: number;
 };
 
 export type ContextUsage = {
@@ -114,7 +124,11 @@ export type KnowledgeBackendPayload = {
 
 export type ChatBridge = {
   getHistoryForBackend: () => Promise<{ role: string; content: string }[]>;
-  persistTurn: (user: UserTurnPayload, assistantText: string) => Promise<void>;
+  persistTurn: (
+    user: UserTurnPayload,
+    assistantText: string,
+    chatTitle?: string,
+  ) => Promise<void>;
   ensureActiveChat: () => Promise<string | null>;
   getKnowledgeForBackend?: () => Promise<KnowledgeBackendPayload>;
 };
@@ -131,9 +145,18 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [preflightBusy, setPreflightBusy] = useState(false);
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [backendConnecting, setBackendConnecting] = useState(false);
+  /** Auto-connect finished (success or gave up); drives startup splash / retry UI. */
+  const [backendStartupSettled, setBackendStartupSettled] = useState(false);
+  /** User passed the first-time startup gate (do not show full-page loader again). */
+  const [initialStartupComplete, setInitialStartupComplete] = useState(false);
   /** True after WebSocket connects until user stops or connection drops. */
   const [sessionActive, setSessionActive] = useState(false);
   const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
+  const [audioLevels, setAudioLevels] = useState<AudioLevels>({ mic: 0, tts: 0 });
+  const smoothMicRef = useRef(0);
+  const smoothTtsRef = useRef(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pendingUserTextRef = useRef<UserMessagePayload | null>(null);
@@ -143,9 +166,12 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
   chatBridgeRef.current = chatBridge;
   const bridgeUnlistenRef = useRef<(() => void) | null>(null);
   const intentionalCloseRef = useRef(false);
+  const appShuttingDownRef = useRef(false);
+  const autoConnectRanRef = useRef(false);
+  const initialStartupCompleteRef = useRef(false);
+  const connectInFlightRef = useRef<Promise<boolean> | null>(null);
   const startAttemptRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [llmProvider, setLlmProvider] = useState<LlmProvider>(
     DEFAULT_VOICE_SETTINGS.llmProvider,
   );
@@ -176,6 +202,12 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
   const [supertonicModel, setSupertonicModel] = useState(
     DEFAULT_VOICE_SETTINGS.supertonicModel,
   );
+  const [modelsRoot, setModelsRoot] = useState(
+    DEFAULT_VOICE_SETTINGS.modelsRoot,
+  );
+  const [vectorStoreIds, setVectorStoreIds] = useState<string[]>(
+    DEFAULT_VOICE_SETTINGS.vectorStoreIds,
+  );
 
   const currentSettings = useCallback(
     (): VoiceSettings => ({
@@ -193,6 +225,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       supertonicVoice,
       supertonicLang,
       supertonicModel,
+      modelsRoot,
+      vectorStoreIds,
     }),
     [
       llmProvider,
@@ -209,6 +243,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       supertonicVoice,
       supertonicLang,
       supertonicModel,
+      modelsRoot,
+      vectorStoreIds,
     ],
   );
 
@@ -228,6 +264,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       setSupertonicVoice(normalizeSupertonicVoice(s.supertonicVoice));
       setSupertonicLang(normalizeSupertonicLang(s.supertonicLang));
       setSupertonicModel(s.supertonicModel);
+      setModelsRoot(s.modelsRoot ?? DEFAULT_VOICE_SETTINGS.modelsRoot);
+      setVectorStoreIds(s.vectorStoreIds ?? DEFAULT_VOICE_SETTINGS.vectorStoreIds);
       setSettingsLoaded(true);
     });
   }, []);
@@ -268,7 +306,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      toast.error(msg);
+      setError(msg);
+      setUiState("error");
       return null;
     } finally {
       setPreflightBusy(false);
@@ -392,9 +431,49 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
         case "ready":
           if (typeof msg.port === "number") setWsPort(msg.port);
           break;
-        case "state":
-          pushServerState(msg.state);
+        case "state": {
+          const s = msg.state;
+          pushServerState(s);
+          if (s === "listening") {
+            smoothTtsRef.current = 0;
+            setAudioLevels((prev) => ({ ...prev, tts: 0 }));
+          } else if (s === "speaking") {
+            smoothMicRef.current = 0;
+            setAudioLevels((prev) => ({ ...prev, mic: 0 }));
+          } else if (s === "thinking" || s === "idle") {
+            smoothMicRef.current = 0;
+            smoothTtsRef.current = 0;
+            setAudioLevels({ mic: 0, tts: 0 });
+          }
           break;
+        }
+        case "audio_level": {
+          const src = msg.source;
+          const level =
+            typeof msg.level === "number"
+              ? Math.max(0, Math.min(1, msg.level))
+              : 0;
+          if (src === "mic") {
+            smoothMicRef.current = smoothAudioLevel(
+              smoothMicRef.current,
+              level,
+            );
+            setAudioLevels((prev) => ({
+              ...prev,
+              mic: smoothMicRef.current,
+            }));
+          } else if (src === "tts") {
+            smoothTtsRef.current = smoothAudioLevel(
+              smoothTtsRef.current,
+              level,
+            );
+            setAudioLevels((prev) => ({
+              ...prev,
+              tts: smoothTtsRef.current,
+            }));
+          }
+          break;
+        }
         case "stt_final":
           if (msg.text) {
             const pending = pendingUserTextRef.current;
@@ -440,6 +519,7 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
                   })),
                 },
                 msg.text,
+                msg.chat_title,
               );
             }
             setTranscript((t) => [
@@ -463,6 +543,13 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
           const friendly = friendlyErrorMessage(msg.message, msg.code);
           setError(friendly);
           setUiState("error");
+          setSessionActive(false);
+          if (msg.code === "bridge_failed") {
+            bridgeUnlistenRef.current?.();
+            bridgeUnlistenRef.current = null;
+            setBackendConnected(false);
+            void disconnectVoiceBridge().catch(() => {});
+          }
           toast.error(friendly);
           break;
         }
@@ -470,6 +557,9 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
           if (msg.message) toast.info(msg.message);
           break;
         case "interrupt_ack":
+          smoothMicRef.current = 0;
+          smoothTtsRef.current = 0;
+          setAudioLevels({ mic: 0, tts: 0 });
           break;
         default:
           break;
@@ -545,6 +635,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
           } else {
             setError("Connection to voice backend lost.");
             setUiState("error");
+            setBackendConnected(false);
+            setSessionActive(false);
             toast.error("Connection to voice backend lost.");
           }
         };
@@ -553,37 +645,97 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     [handleMessage],
   );
 
+  const connectBackend = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!isTauri()) return false;
+      if (appShuttingDownRef.current) return false;
+      if (connectInFlightRef.current) {
+        return connectInFlightRef.current;
+      }
+
+      const task = (async () => {
+        setError(null);
+        const pf =
+          preflight?.hard_ok === true ? preflight : await runPreflight();
+        if (!pf?.hard_ok) {
+          if (!silent) {
+            const msg =
+              "Fix required readiness checks before connecting backend.";
+            setError(msg);
+            setUiState("error");
+            toast.error(msg);
+          }
+          return false;
+        }
+
+        setBackendConnecting(true);
+        setBackendConnected(false);
+        if (!sessionActive) {
+          setUiState("connecting");
+        }
+        try {
+          const port = await invoke<number>("start_backend");
+          setWsPort(port);
+          await connectSocket(port);
+          await sendConfig();
+          setBackendConnected(true);
+          setInitialStartupComplete(true);
+          initialStartupCompleteRef.current = true;
+          if (!sessionActive) {
+            setUiState("idle");
+          }
+          return true;
+        } catch (e) {
+          setBackendConnected(false);
+          setSessionActive(false);
+          const msg = e instanceof Error ? e.message : String(e);
+          setError(msg);
+          setUiState("error");
+          if (!silent) toast.error(msg);
+          try {
+            await invoke("stop_backend");
+          } catch {
+            /* ignore */
+          }
+          return false;
+        } finally {
+          setBackendConnecting(false);
+        }
+      })();
+
+      connectInFlightRef.current = task;
+      try {
+        return await task;
+      } finally {
+        if (connectInFlightRef.current === task) {
+          connectInFlightRef.current = null;
+        }
+      }
+    },
+    [preflight, runPreflight, connectSocket, sendConfig, sessionActive],
+  );
+
   const startSession = useCallback(async () => {
     setError(null);
-    const pf =
-      preflight?.hard_ok === true ? preflight : await runPreflight();
-    if (!pf?.hard_ok) {
-      const msg = "Fix required readiness checks before starting.";
+    if (!backendConnected) {
+      const connected = await connectBackend();
+      if (!connected) return;
+    }
+    if (backendConnecting) {
+      const msg = "Backend is still connecting. Please wait.";
       setError(msg);
-      setUiState("error");
-      toast.error(msg);
+      toast.message(msg);
       return;
     }
 
     // Drop stale in-flight start if user double-clicks Start.
     const attempt = (startAttemptRef.current += 1);
-    setUiState("connecting");
+    setUiState("idle");
     try {
-      const port = await invoke<number>("start_backend");
-      if (attempt !== startAttemptRef.current) return;
-      setWsPort(port);
-      await connectSocket(port);
-      if (attempt !== startAttemptRef.current) {
-        await disconnectVoiceBridge().catch(() => {});
-        bridgeUnlistenRef.current?.();
-        bridgeUnlistenRef.current = null;
-        return;
-      }
       setSessionActive(true);
       if (chatBridgeRef.current?.ensureActiveChat) {
         await chatBridgeRef.current.ensureActiveChat();
       }
-      await sendConfig();
       sendJson({ type: "start" });
       setUiState("listening");
     } catch (e) {
@@ -593,13 +745,8 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       setError(msg);
       setUiState("error");
       toast.error(msg);
-      try {
-        await invoke("stop_backend");
-      } catch {
-        /* ignore */
-      }
     }
-  }, [connectSocket, preflight, runPreflight, sendConfig, sendJson]);
+  }, [backendConnected, backendConnecting, connectBackend, sendJson]);
 
   const stopSession = useCallback(async () => {
     startAttemptRef.current += 1;
@@ -611,8 +758,13 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     bridgeUnlistenRef.current?.();
     bridgeUnlistenRef.current = null;
     await disconnectVoiceBridge().catch(() => {});
+    setBackendConnected(false);
+    setBackendConnecting(false);
     setStreamingAssistant("");
     setStreamingReasoning("");
+    smoothMicRef.current = 0;
+    smoothTtsRef.current = 0;
+    setAudioLevels({ mic: 0, tts: 0 });
     try {
       await invoke("stop_backend");
     } catch {
@@ -621,10 +773,28 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     setUiState("disconnected");
   }, [sendJson]);
 
+  const stopSessionKeepBackend = useCallback(() => {
+    startAttemptRef.current += 1;
+    intentionalCloseRef.current = false;
+    setSessionActive(false);
+    sendJson({ type: "stop" });
+    setStreamingAssistant("");
+    setStreamingReasoning("");
+    smoothMicRef.current = 0;
+    smoothTtsRef.current = 0;
+    setAudioLevels({ mic: 0, tts: 0 });
+    setError(null);
+    // Keep backend + bridge alive so next chat can start immediately.
+    setUiState(backendConnected ? "idle" : "disconnected");
+  }, [sendJson, backendConnected]);
+
   const interrupt = useCallback(() => {
     sendJson({ type: "interrupt" });
     setStreamingAssistant("");
     setStreamingReasoning("");
+    smoothMicRef.current = 0;
+    smoothTtsRef.current = 0;
+    setAudioLevels({ mic: 0, tts: 0 });
   }, [sendJson]);
 
   const sendUserText = useCallback(
@@ -734,11 +904,56 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     setContextUsage(null);
   }, []);
 
+  /** Bleed off stuck peaks between sparse backend level events. */
+  useEffect(() => {
+    if (!sessionActive) return;
+    const id = window.setInterval(() => {
+      let changed = false;
+      if (smoothMicRef.current > 0.01) {
+        smoothMicRef.current *= 0.9;
+        if (smoothMicRef.current < 0.01) smoothMicRef.current = 0;
+        changed = true;
+      }
+      if (smoothTtsRef.current > 0.01) {
+        smoothTtsRef.current *= 0.9;
+        if (smoothTtsRef.current < 0.01) smoothTtsRef.current = 0;
+        changed = true;
+      }
+      if (changed) {
+        setAudioLevels({
+          mic: smoothMicRef.current,
+          tts: smoothTtsRef.current,
+        });
+      }
+    }, 70);
+    return () => window.clearInterval(id);
+  }, [sessionActive]);
+
   useEffect(() => {
     if (!isTauri()) return;
+    let closeUnlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onCloseRequested(() => {
+        appShuttingDownRef.current = true;
+        intentionalCloseRef.current = true;
+        bridgeUnlistenRef.current?.();
+        bridgeUnlistenRef.current = null;
+        void disconnectVoiceBridge().catch(() => {});
+        // Backend is stopped by Rust on WindowEvent::CloseRequested / Exit.
+      })
+      .then((fn) => {
+        closeUnlisten = fn;
+      });
+
     let unlistenFn: (() => void) | undefined;
     void listen<{ code?: number; message: string }>("backend-exited", (ev) => {
+      if (appShuttingDownRef.current) return;
       setSessionActive(false);
+      setBackendConnected(false);
+      setBackendConnecting(false);
+      if (!initialStartupCompleteRef.current) {
+        setBackendStartupSettled(true);
+      }
       wsRef.current?.close();
       wsRef.current = null;
       bridgeUnlistenRef.current?.();
@@ -752,20 +967,98 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
       unlistenFn = fn;
     });
     return () => {
+      closeUnlisten?.();
       unlistenFn?.();
     };
   }, []);
 
+  useEffect(() => {
+    if (!settingsLoaded || !isTauri()) return;
+    if (appShuttingDownRef.current) return;
+    if (autoConnectRanRef.current) return;
+    if (initialStartupComplete || backendConnected) return;
+    if (preflightBusy) return;
+    if (preflight && !preflight.hard_ok) {
+      setBackendStartupSettled(true);
+      return;
+    }
+    if (preflight?.hard_ok !== true) return;
+
+    autoConnectRanRef.current = true;
+    let cancelled = false;
+    setBackendStartupSettled(false);
+
+    void (async () => {
+      const ok = await connectBackend({ silent: true });
+      if (!cancelled) {
+        setBackendStartupSettled(true);
+        if (ok) setInitialStartupComplete(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    settingsLoaded,
+    preflight?.hard_ok,
+    preflightBusy,
+    initialStartupComplete,
+    backendConnected,
+    connectBackend,
+  ]);
+
+  const retryBackendStartup = useCallback(async () => {
+    setBackendStartupSettled(false);
+    setError(null);
+    const pf =
+      preflight?.hard_ok === true ? preflight : await runPreflight();
+    if (!pf?.hard_ok) {
+      setBackendStartupSettled(true);
+      return false;
+    }
+    const ok = await connectBackend({ silent: false });
+    if (ok) {
+      setInitialStartupComplete(true);
+      initialStartupCompleteRef.current = true;
+    }
+    setBackendStartupSettled(true);
+    return ok;
+  }, [preflight, runPreflight, connectBackend]);
+
+  const backendStartupLoading =
+    isTauri() &&
+    !appShuttingDownRef.current &&
+    !initialStartupComplete &&
+    !backendConnected &&
+    (!settingsLoaded ||
+      preflightBusy ||
+      !preflight ||
+      backendConnecting ||
+      (preflight?.hard_ok === true && !backendStartupSettled));
+
+  const backendStartupFailed =
+    isTauri() &&
+    !appShuttingDownRef.current &&
+    !initialStartupComplete &&
+    settingsLoaded &&
+    !backendConnected &&
+    !backendConnecting &&
+    backendStartupSettled;
+
   const canStart =
     isTauri() &&
+    uiState === "idle" &&
     preflight?.hard_ok === true &&
-    uiState !== "connecting" &&
-    (uiState === "disconnected" || uiState === "error");
+    backendConnected &&
+    !backendConnecting &&
+    !sessionActive;
 
   const canType = sessionActive && uiState !== "connecting";
 
   return {
     isDesktop: isTauri(),
+    settingsLoaded,
     sessionActive,
     canType,
     uiState,
@@ -774,11 +1067,19 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     streamingAssistant,
     streamingReasoning,
     contextUsage,
+    audioLevels,
     wsPort,
     preflight,
     preflightBusy,
+    backendConnected,
+    backendConnecting,
+    initialStartupComplete,
+    backendStartupLoading,
+    backendStartupFailed,
+    retryBackendStartup,
     canStart,
     runPreflight,
+    connectBackend,
     llmProvider,
     setLlmProvider,
     lmBaseUrl,
@@ -807,14 +1108,18 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     setSupertonicLang,
     supertonicModel,
     setSupertonicModel,
+    modelsRoot,
+    setModelsRoot,
     startSession,
     stopSession,
+    stopSessionKeepBackend,
     interrupt,
     sendUserText,
     sendUserMessage,
     pttDown,
     pttUp,
     applySettings,
+    currentSettings,
     reloadSessionConfig,
     loadTranscript,
     resetContextUsage,

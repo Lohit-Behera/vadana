@@ -7,22 +7,31 @@ const LS_KEY = "vadana.voice-settings";
 const LS_KEY_LEGACY = "local-live.voice-settings";
 
 /** Shipped default; user can edit in Settings before starting a session. */
-export const DEFAULT_VOICE_SYSTEM_PROMPT = [
-  "You are a helpful English assistant. The user may speak to you or type. Their latest message may be speech-to-text (STT) or typed text.",
-  "When the message is from STT, interpret charitably (accent, noise, filler, informal phrasing). When it is typed, follow their wording more literally unless it is obviously mistaken.",
-  "Always answer what they asked and stay on topic. Do not change the subject or add unrelated tangents.",
-  "Replies are read aloud by TTS: usually one to three short sentences, plain language. No markdown or bullet lists unless they clearly need detail.",
-  "If you truly cannot infer what they want, ask one brief clarifying question. Do not refuse with vague non-answers when a reasonable reply is still possible.",
-  "Do not mention Whisper, transcription, or that you are an AI unless they ask.",
-  "If they ask which model you are, answer briefly in neutral terms; do not recite marketing blurbs or long vendor descriptions unless they explicitly ask for details.",
-].join("\n\n");
+export const DEFAULT_VOICE_SYSTEM_PROMPT = `You are a helpful voice assistant. The user may speak (speech-to-text) or type. For STT, interpret charitably (accent, noise, fillers). For typed input, follow their wording unless clearly wrong.
+
+Always answer what they asked. Stay on topic. Replies are read aloud by Supertonic 3 TTS: one to three short sentences, conversational, plain language. No markdown, bullets, code fences, or stage directions in parentheses.
+
+TTS expression tags (Supertonic 3 only, optional):
+- You may embed these exact lowercase tags where a natural sound fits: <laugh>, <breath>, <sigh>.
+- Place a tag after the phrase that motivates it. Most replies need no tags—use them only when emotion or pacing clearly calls for it (at most one tag per reply; two only for a strong shift such as surprise then relief).
+- Never explain the tags, never list them, never quote them, and never use other tags or XML.
+- Do not start a reply with a tag or split a tag across lines.
+
+Examples (tags are optional, not required every time):
+- "That's a clever idea—I hadn't thought of it that way."
+- "That's a clever idea <laugh> I hadn't thought of it that way."
+- "Give me a second <breath> okay, here's the short answer."
+- "I'm sorry that was frustrating <sigh> let's fix it step by step."
+
+If you cannot infer what they want, ask one brief clarifying question. Do not mention Whisper, transcription, Supertonic, or that you are an AI unless they ask.`;
 
 export type LlmProvider =
   | "lm_studio"
   | "openai"
   | "anthropic"
   | "ollama"
-  | "groq";
+  | "groq"
+  | "openrouter";
 
 export type VoiceSettings = {
   llmProvider: LlmProvider;
@@ -39,6 +48,8 @@ export type VoiceSettings = {
   supertonicVoice: string;
   supertonicLang: string;
   supertonicModel: string;
+  /** Root folder for Whisper / Supertonic weights (default: ~/vadana/models). */
+  modelsRoot: string;
   /** Reserved for future LiteLLM vector_store_ids / RAG integration. */
   vectorStoreIds: string[];
 };
@@ -58,6 +69,7 @@ export const DEFAULT_VOICE_SETTINGS: VoiceSettings = {
   supertonicVoice: "F2",
   supertonicLang: "en",
   supertonicModel: "supertonic-3",
+  modelsRoot: "",
   vectorStoreIds: [],
 };
 

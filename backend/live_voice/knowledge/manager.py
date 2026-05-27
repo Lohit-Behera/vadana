@@ -125,11 +125,10 @@ class KnowledgeManager:
                 enabled = [
                     e for e in catalog if e.get("enabled") and e.get("folder_enabled")
                 ]
-                await self._notify(
-                    send_notice,
-                    f"Already indexed — {len(enabled)} document(s) unchanged, skipped rebuild.",
-                    phase="done",
-                    percent=100,
+                self._persist_fingerprint(fp)
+                logger.info(
+                    "Knowledge index up to date (%d document(s)), skipped rebuild",
+                    len(enabled),
                 )
                 return {
                     "ok": True,

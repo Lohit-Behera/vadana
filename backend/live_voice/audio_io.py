@@ -85,6 +85,7 @@ class PlaybackStream:
         self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
         self._stop = threading.Event()
+        self._output_level = 0.0
 
     def _callback(self, outdata, frames, time, status) -> None:  # type: ignore[no-untyped-def]
         if status:
@@ -103,6 +104,18 @@ class PlaybackStream:
                 else:
                     self._buf[0] = chunk[take:]
         outdata[:] = out
+        if filled > 0:
+            rms = float(np.sqrt(np.mean(out[:filled, 0] ** 2)))
+            self._output_level = min(1.0, rms * 3.2)
+        else:
+            self._output_level *= 0.82
+
+    def output_level(self) -> float:
+        return self._output_level
+
+    def pending_samples(self) -> int:
+        with self._lock:
+            return int(sum(len(c) for c in self._buf))
 
     def start(self) -> None:
         self._stop.clear()

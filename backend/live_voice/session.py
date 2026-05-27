@@ -6,13 +6,16 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import numpy as np
 import torch
 
 from live_voice.audio_io import MicStream, PlaybackStream
+from live_voice.default_prompt import DEFAULT_SYSTEM_PROMPT
 from live_voice.errors import error_event
+from live_voice.chat_title import FIRST_TURN_TITLE_INSTRUCTION, FirstTurnTitleParser
 from live_voice.llm_client import (
     StreamChunk,
     reasoning_fallback_reply,
@@ -30,14 +33,27 @@ from live_voice.multimodal import (
 )
 from live_voice.knowledge import KnowledgeManager, build_reference_context
 from live_voice.knowledge.context import resolve_active_file_ids
-from live_voice.knowledge.fingerprint import library_fingerprint
+from live_voice.knowledge.fingerprint import (
+    all_enabled_already_indexed,
+    library_fingerprint,
+)
 from live_voice.protocol import server_event
 from live_voice.stt import STTEngine
-from live_voice.text_split import flush_tts_chunks
+from live_voice.text_split import flush_tts_chunks, should_start_tts
 from live_voice.tts_engine import TTSEngine
 from live_voice.vad import SileroStreamVAD
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_audio_level(level: float) -> float:
+    """Soft-knee: preserve quiet/moderate levels, tame only loud peaks."""
+    x = max(0.0, min(1.0, float(level)))
+    knee = 0.42
+    if x <= knee:
+        return x
+    excess = x - knee
+    return knee + float(np.tanh(excess * 2.8)) * 0.4
 
 
 def _resample_linear(x: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
@@ -73,13 +89,15 @@ class VoiceSession:
         self._messages: list[dict[str, Any]] = []
         self.cancel_turn = asyncio.Event()
         self._assistant_talking = False
+        self._tts_playing = False
+        self._last_level_ts = 0.0
         self._models_ready = False
         self._vad: SileroStreamVAD | None = None
         self._stt: STTEngine | None = None
         self._mic: MicStream | None = None
         self._playback: PlaybackStream | None = None
         self._tts: TTSEngine | None = None
-        self._turn_lock = asyncio.Lock()
+        self._active_turn_task: asyncio.Task[None] | None = None
         self._pending_user_messages: list[tuple[str, list[AttachmentDict]]] = []
         self.config: dict[str, Any] = {
             "llm_provider": "lm_studio",
@@ -91,23 +109,12 @@ class VoiceSession:
             "push_to_talk": False,
             "input_gain": 1.0,
             "vad_sensitivity": 0.5,
-            "system_prompt": (
-                "You are a helpful English assistant. The user may speak (message is speech-to-text) "
-                "or type. When input is STT, interpret charitably (accent, noise, filler, informal phrasing). "
-                "When typed, follow their wording more literally unless obviously mistaken.\n\n"
-                "Always answer what they asked and stay on topic. Do not change the subject or add unrelated tangents.\n\n"
-                "Replies are read aloud by TTS: usually one to three short sentences, plain language. "
-                "No markdown, bullet lists, or long monologues unless they clearly ask for detail.\n\n"
-                "If you truly cannot infer what they want, ask one brief clarifying question. Do not refuse with vague "
-                "non-answers when a reasonable reply is still possible.\n\n"
-                "Do not mention Whisper, transcription, or that you are an AI unless they ask.\n\n"
-                "If they ask which model you are, answer briefly in neutral terms; do not recite marketing "
-                "blurbs or long vendor descriptions unless they explicitly ask for details."
-            ),
+            "system_prompt": DEFAULT_SYSTEM_PROMPT,
             "piper_model": "",
             "supertonic_voice": "",
             "supertonic_lang": "en",
             "supertonic_model": "supertonic-3",
+            "models_root": "",
             "whisper_model": "small",
             # When True, mic VAD can interrupt the assistant (needs headphones to avoid echo).
             "vad_barge_in": False,
@@ -198,7 +205,7 @@ class VoiceSession:
     def _log_pipeline_loaded(self) -> None:
         assert self._vad is not None and self._stt is not None and self._tts is not None
         logger.info(
-            "Pipeline | VAD=Silero (torch.hub snakers4/silero-vad) threshold=%.3f frame=%d samples @ 16 kHz",
+            "Pipeline | VAD=Silero threshold=%.3f frame=%d @ 16 kHz (min_silence tuned via vad_sensitivity)",
             self._vad_threshold_used,
             self._vad.window_samples,
         )
@@ -216,6 +223,39 @@ class VoiceSession:
             len(self._messages),
         )
         logger.info("Pipeline | TTS=%s", self._tts.backend_label)
+
+    async def _maybe_emit_audio_level(self, source: str, level: float) -> None:
+        now = time.monotonic()
+        if now - self._last_level_ts < 0.032:
+            return
+        self._last_level_ts = now
+        clamped = _normalize_audio_level(level)
+        await self.send_json(
+            server_event("audio_level", source=source, level=clamped),
+        )
+
+    async def _ensure_tts_speaking_state(self) -> None:
+        if self._tts_playing:
+            return
+        self._tts_playing = True
+        await self.send_json(server_event("state", state="speaking"))
+
+    async def _wait_playback_done(self) -> None:
+        if not self._playback:
+            return
+        quiet_ticks = 0
+        while self._running:
+            pending = self._playback.pending_samples()
+            level = self._playback.output_level()
+            if pending > 0 or level > 0.035:
+                quiet_ticks = 0
+                await self._maybe_emit_audio_level("tts", level)
+                await asyncio.sleep(0.04)
+            else:
+                quiet_ticks += 1
+                if quiet_ticks >= 4:
+                    break
+                await asyncio.sleep(0.04)
 
     async def send_json(self, obj: dict[str, Any]) -> None:
         try:
@@ -252,6 +292,7 @@ class VoiceSession:
                 "supertonic_voice",
                 "supertonic_lang",
                 "supertonic_model",
+                "models_root",
                 "attachments_dir",
                 "knowledge_mode",
                 "knowledge_selection",
@@ -277,8 +318,19 @@ class VoiceSession:
                         self._knowledge._read_persisted_fingerprint()
                     )
                 if fp and fp != self._knowledge_library_fingerprint:
-                    self._knowledge_library_fingerprint = fp
-                    asyncio.create_task(self._rebuild_knowledge_index(catalog))
+                    mode = str(self.config.get("knowledge_mode") or "off")
+                    if mode == "off" or all_enabled_already_indexed(catalog):
+                        self._knowledge._persist_fingerprint(fp)
+                        self._knowledge_library_fingerprint = fp
+                        logger.info(
+                            "Knowledge fingerprint synced (mode=%s), no rebuild",
+                            mode,
+                        )
+                    else:
+                        self._knowledge_library_fingerprint = fp
+                        asyncio.create_task(
+                            self._rebuild_knowledge_index(catalog),
+                        )
             self._log_config_update()
             logger.info(
                 "Config applied (TTS voice=%r lang=%r); send a message to reach the LLM",
@@ -287,13 +339,24 @@ class VoiceSession:
             )
             asyncio.create_task(self._warm_knowledge_cache())
             if self._models_ready:
+                from live_voice.models_paths import (
+                    resolve_models_root,
+                    supertonic_model_dir,
+                )
+
                 if self._tts is not None:
                     self._tts.close()
+                mroot = resolve_models_root(str(self.config.get("models_root") or ""))
+                st_dir = supertonic_model_dir(
+                    mroot,
+                    str(self.config.get("supertonic_model") or "supertonic-3"),
+                )
                 self._tts = TTSEngine(
                     str(self.config.get("piper_model") or ""),
                     supertonic_voice=str(self.config.get("supertonic_voice") or ""),
                     supertonic_lang=str(self.config.get("supertonic_lang") or "en"),
                     supertonic_model=str(self.config.get("supertonic_model") or "supertonic-3"),
+                    supertonic_model_dir=st_dir,
                 )
                 logger.info("Pipeline | TTS=%s", self._tts.backend_label)
             return
@@ -377,13 +440,25 @@ class VoiceSession:
         logger.info("Voice session stop")
         await self.send_json(server_event("state", state="idle"))
 
-    async def interrupt(self) -> None:
+    async def _cancel_active_turn(self) -> None:
         self.cancel_turn.set()
         if self._playback:
             self._playback.clear()
+        task = self._active_turn_task
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self._active_turn_task = None
+
+    async def interrupt(self) -> None:
+        await self._cancel_active_turn()
         if self._vad:
             self._vad.reset()
         self._assistant_talking = False
+        self._tts_playing = False
         logger.info("Interrupt: cancelled turn, cleared playback")
         await self.send_json(server_event("interrupt_ack"))
         await self.send_json(server_event("state", state="listening"))
@@ -395,28 +470,55 @@ class VoiceSession:
         if self._models_ready:
             return
 
-        thr = 0.85 - float(self.config.get("vad_sensitivity", 0.5)) * 0.55
+        sens = float(self.config.get("vad_sensitivity", 0.5))
+        thr = 0.85 - sens * 0.55
         thr = max(0.25, min(0.85, thr))
         self._vad_threshold_used = thr
+        # Longer silence before end-of-utterance (avoids cutting off mid-sentence pauses).
+        min_silence_ms = int(750 + (1.0 - sens) * 950)
+        min_silence_ms = max(700, min(1800, min_silence_ms))
 
         # Whisper → numba → numpy C extensions: first import must run on the main
         # thread on Windows; importing from asyncio.to_thread breaks with
         # "numpy._core.multiarray failed to import" / "cannot load module more than once".
         import whisper  # noqa: PLC0415
 
+        from live_voice.models_paths import (
+            apply_models_env,
+            resolve_models_root,
+            supertonic_model_dir,
+            whisper_download_root,
+        )
+
+        models_root = resolve_models_root(str(self.config.get("models_root") or ""))
+
         def _load() -> tuple[SileroStreamVAD, STTEngine]:
-            vad = SileroStreamVAD(threshold=thr)
+            apply_models_env(models_root)
+            vad = SileroStreamVAD(
+                threshold=thr,
+                min_silence_duration_ms=min_silence_ms,
+                speech_pad_ms=100,
+            )
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model_size = str(self.config.get("whisper_model", "small"))
-            stt = STTEngine(model_size=model_size, device=device)
+            stt = STTEngine(
+                model_size=model_size,
+                device=device,
+                download_root=whisper_download_root(models_root),
+            )
             return vad, stt
 
         self._vad, self._stt = await asyncio.to_thread(_load)
+        st_dir = supertonic_model_dir(
+            models_root,
+            str(self.config.get("supertonic_model") or "supertonic-3"),
+        )
         self._tts = TTSEngine(
             str(self.config.get("piper_model") or ""),
             supertonic_voice=str(self.config.get("supertonic_voice") or ""),
             supertonic_lang=str(self.config.get("supertonic_lang") or "en"),
             supertonic_model=str(self.config.get("supertonic_model") or "supertonic-3"),
+            supertonic_model_dir=st_dir,
         )
         self._models_ready = True
         self._log_pipeline_loaded()
@@ -451,6 +553,12 @@ class VoiceSession:
 
                 sd = self._vad.process(chunk)
 
+                if not self._assistant_talking or in_speech:
+                    rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+                    mic_level = min(1.0, rms * 10.0)
+                    if mic_level > 0.03 or in_speech or self._ptt_active:
+                        await self._maybe_emit_audio_level("mic", mic_level)
+
                 if (
                     self.config.get("vad_barge_in")
                     and self._assistant_talking
@@ -458,8 +566,12 @@ class VoiceSession:
                     and "start" in sd
                 ):
                     await self.interrupt()
-                    in_speech = False
-                    speech_buffer.clear()
+                    in_speech = True
+                    speech_buffer = [chunk.copy()]
+                    continue
+
+                # Ignore VAD while assistant is playing (echo causes false end/start).
+                if self._assistant_talking and not in_speech:
                     continue
 
                 if self.config.get("push_to_talk"):
@@ -475,10 +587,20 @@ class VoiceSession:
                     speech_buffer.append(chunk.copy())
                     if sd is not None and "end" in sd:
                         in_speech = False
-                        audio = np.concatenate(speech_buffer) if speech_buffer else np.array([], dtype=np.float32)
+                        audio = (
+                            np.concatenate(speech_buffer)
+                            if speech_buffer
+                            else np.array([], dtype=np.float32)
+                        )
                         speech_buffer.clear()
-                        if audio.size > 0:
+                        min_samples = int(16_000 * 0.28)
+                        if audio.size >= min_samples:
                             asyncio.create_task(self._enqueue_utterance(audio))
+                        elif audio.size > 0:
+                            logger.debug(
+                                "Dropped short utterance (%.0f ms)",
+                                1000.0 * audio.size / 16_000.0,
+                            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -492,13 +614,21 @@ class VoiceSession:
                 self._playback.stop()
 
     async def _enqueue_utterance(self, audio: np.ndarray) -> None:
-        async with self._turn_lock:
-            if not self._running:
-                return
-            self.gen_id += 1
-            turn = self.gen_id
-            self.cancel_turn.clear()
-            await self._process_utterance(audio, turn)
+        if not self._running:
+            return
+        await self._cancel_active_turn()
+        self.gen_id += 1
+        turn = self.gen_id
+        self.cancel_turn.clear()
+
+        async def _run() -> None:
+            try:
+                await self._process_utterance(audio, turn)
+            except asyncio.CancelledError:
+                logger.info("Turn %s utterance cancelled", turn)
+                raise
+
+        self._active_turn_task = asyncio.create_task(_run())
 
     @staticmethod
     def _parse_attachments(raw: Any) -> list[AttachmentDict]:
@@ -552,13 +682,21 @@ class VoiceSession:
                     ),
                 )
             return
-        async with self._turn_lock:
-            if not self._running:
-                return
-            self.gen_id += 1
-            turn = self.gen_id
-            self.cancel_turn.clear()
-            await self._process_user_message(text, attachments, turn)
+        if not self._running:
+            return
+        await self._cancel_active_turn()
+        self.gen_id += 1
+        turn = self.gen_id
+        self.cancel_turn.clear()
+
+        async def _run() -> None:
+            try:
+                await self._process_user_message(text, attachments, turn)
+            except asyncio.CancelledError:
+                logger.info("Turn %s user_message cancelled", turn)
+                raise
+
+        self._active_turn_task = asyncio.create_task(_run())
 
     async def _rebuild_knowledge_index(
         self,
@@ -755,7 +893,10 @@ class VoiceSession:
             return
 
         reference = await self._build_reference_knowledge(text or display)
+        is_first_turn = len(self._messages) == 0
         system_prompt = self._compose_system_prompt(reference)
+        if is_first_turn:
+            system_prompt = f"{system_prompt}\n\n{FIRST_TURN_TITLE_INSTRUCTION}".strip()
         if reference:
             logger.info(
                 "Turn %s | Injected reference knowledge (%d chars, mode=%s)",
@@ -785,11 +926,14 @@ class VoiceSession:
         messages.append({"role": "user", "content": user_content})
 
         self._assistant_talking = True
-        await self.send_json(server_event("state", state="speaking"))
+        self._tts_playing = False
 
         full_reply = ""
         reasoning_accum = ""
         tts_buffer = ""
+        tts_started = False
+        tts_first_token_ts: float | None = None
+        title_parser = FirstTurnTitleParser() if is_first_turn else None
         max_tokens = int(self.config.get("max_context_tokens") or 128_000)
         logger.info(
             "Turn %s | LLM stream provider=%s model=%r history=%d attachments=%d stt=%s",
@@ -820,9 +964,26 @@ class VoiceSession:
                             server_event("llm_reasoning_token", text=chunk.reasoning),
                         )
                     if chunk.text:
-                        full_reply += chunk.text
-                        await self.send_json(server_event("llm_token", text=chunk.text))
-                        tts_buffer += chunk.text
+                        emit_text = chunk.text
+                        if title_parser is not None:
+                            emit_text = title_parser.feed(chunk.text)
+                        if not emit_text:
+                            continue
+                        if tts_first_token_ts is None:
+                            tts_first_token_ts = time.monotonic()
+                        full_reply += emit_text
+                        await self.send_json(server_event("llm_token", text=emit_text))
+                        tts_buffer += emit_text
+                        elapsed_s = (
+                            0.0
+                            if tts_first_token_ts is None
+                            else max(0.0, time.monotonic() - tts_first_token_ts)
+                        )
+                        if not tts_started:
+                            tts_started = should_start_tts(tts_buffer, elapsed_s)
+                        if not tts_started:
+                            continue
+                        await self._ensure_tts_speaking_state()
                         chunks, tts_buffer = flush_tts_chunks(tts_buffer)
                         for c in chunks:
                             if self.cancel_turn.is_set() or turn != self.gen_id:
@@ -835,7 +996,15 @@ class VoiceSession:
             await self.send_json(error_event(str(exc), code="lm_unreachable"))
             return
 
+        if title_parser is not None:
+            tail = title_parser.flush()
+            if tail:
+                full_reply += tail
+                await self.send_json(server_event("llm_token", text=tail))
+                tts_buffer += tail
+
         reply = full_reply.strip()
+        chat_title = title_parser.title if title_parser else None
         if not reply and reasoning_accum.strip():
             fallback = reasoning_fallback_reply(reasoning_accum)
             if fallback:
@@ -847,6 +1016,7 @@ class VoiceSession:
                 )
 
         if not self.cancel_turn.is_set() and turn == self.gen_id and tts_buffer.strip():
+            await self._ensure_tts_speaking_state()
             await self._speak_chunk(tts_buffer.strip(), turn)
         elif (
             not self.cancel_turn.is_set()
@@ -854,18 +1024,23 @@ class VoiceSession:
             and reply
             and not full_reply.strip()
         ):
+            await self._ensure_tts_speaking_state()
             await self._speak_chunk(reply, turn)
 
         if reply and not self.cancel_turn.is_set() and turn == self.gen_id:
             self._messages.append({"role": "user", "content": user_content})
             self._messages.append({"role": "assistant", "content": reply})
+            assistant_fields: dict[str, Any] = {
+                "text": reply,
+                "user_display": display,
+            }
+            if chat_title:
+                assistant_fields["chat_title"] = chat_title
             await self.send_json(
-                server_event(
-                    "assistant_text",
-                    text=reply,
-                    user_display=display,
-                ),
+                server_event("assistant_text", **assistant_fields),
             )
+            if chat_title:
+                logger.info("Turn %s | Chat title from first reply: %r", turn, chat_title)
             logger.info("Turn %s | Assistant reply length=%d chars", turn, len(reply))
             if usage_out:
                 await self._emit_context_usage(usage_out)
@@ -888,9 +1063,15 @@ class VoiceSession:
             )
             await self._respond_to_user_turn(text, attachments, turn, from_stt=False)
         finally:
-            self._assistant_talking = False
-            if self._running:
-                await self.send_json(server_event("state", state="listening"))
+            if turn == self.gen_id and not self.cancel_turn.is_set():
+                await self._wait_playback_done()
+                self._assistant_talking = False
+                self._tts_playing = False
+                if self._running:
+                    await self.send_json(server_event("state", state="listening"))
+            elif turn == self.gen_id:
+                self._assistant_talking = False
+                self._tts_playing = False
 
     async def _process_utterance(self, audio: np.ndarray, turn: int) -> None:
         assert self._stt is not None and self._tts is not None and self._playback is not None
@@ -909,9 +1090,15 @@ class VoiceSession:
                 return
             await self._respond_to_user_turn(text, [], turn, from_stt=True)
         finally:
-            self._assistant_talking = False
-            if self._running:
-                await self.send_json(server_event("state", state="listening"))
+            if turn == self.gen_id and not self.cancel_turn.is_set():
+                await self._wait_playback_done()
+                self._assistant_talking = False
+                self._tts_playing = False
+                if self._running:
+                    await self.send_json(server_event("state", state="listening"))
+            elif turn == self.gen_id:
+                self._assistant_talking = False
+                self._tts_playing = False
 
     async def _speak_chunk(self, chunk_text: str, turn: int) -> None:
         assert self._tts is not None and self._playback is not None
@@ -926,13 +1113,21 @@ class VoiceSession:
                 if gain != 1.0 and out.size:
                     out = np.clip(out.astype(np.float32) * gain, -1.0, 1.0)
                 peak = float(np.max(np.abs(out))) if out.size else 0.0
+                rms = (
+                    float(np.sqrt(np.mean(out.astype(np.float64) ** 2)))
+                    if out.size
+                    else 0.0
+                )
+                tts_level = min(1.0, rms * 4.5 + peak * 0.65)
                 logger.info(
-                    "TTS playback | samples=%d peak=%.4f gain=%.2f",
+                    "TTS playback | samples=%d peak=%.4f rms=%.4f gain=%.2f",
                     int(out.size),
                     peak,
+                    rms,
                     gain,
                 )
                 await asyncio.to_thread(self._playback.enqueue, out)
+                await self._maybe_emit_audio_level("tts", tts_level)
         except Exception as exc:  # noqa: BLE001
             logger.exception("TTS failed")
             await self.send_json(error_event(f"TTS: {exc}", code="tts_failed"))

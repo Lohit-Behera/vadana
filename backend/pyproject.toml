@@ -18,6 +18,15 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",
     "supertonic>=1.2.1",
     "litellm>=1.86.0",
+    # Knowledge / RAG (LlamaIndex + document loaders)
+    "llama-index-core>=0.12.0",
+    "llama-index-embeddings-fastembed>=0.3.0",
+    "llama-index-embeddings-huggingface>=0.3.0",
+    "fastembed>=0.4.0",
+    "docling>=2.0.0",
+    "pypdf>=5.0.0",
+    "docx2txt>=0.8",
+    "openpyxl>=3.1.0",
 ]
 
 [tool.uv]

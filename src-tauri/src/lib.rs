@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Command;
@@ -11,6 +12,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 mod attachments;
 mod chat_title;
 mod keyring_store;
@@ -22,6 +26,11 @@ const PROTOCOL_VERSION: u32 = 4;
 
 pub struct BackendState {
     pub child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
+    pub port: Mutex<Option<u16>>,
+    /// Root `uv` PID (taskkill /T tears down the Python sidecar tree on Windows).
+    pub pid: Mutex<Option<u32>>,
+    /// Prevents concurrent `start_backend` from spawning multiple sidecars.
+    pub start_in_progress: Mutex<bool>,
 }
 
 /// Rust-side WebSocket to the Python voice backend (WebView may block `ws://` from JS).
@@ -55,6 +64,16 @@ fn resolve_port() -> u16 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(LIVE_VOICE_PORT)
+}
+
+fn first_free_port(start: u16, max_scan: u16) -> Option<u16> {
+    for offset in 0..=max_scan {
+        let port = start.saturating_add(offset);
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Some(port);
+        }
+    }
+    None
 }
 
 pub fn backend_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -154,7 +173,17 @@ fn check_port() -> PreflightCheck {
             id: "port".into(),
             ok: true,
             message: format!(
-                "Voice backend already listening on port {port} (e.g. manual uv run)"
+                "Port {port} has a voice backend (app will restart it on connect)"
+            ),
+            required: true,
+        };
+    }
+    if let Some(fallback) = first_free_port(port.saturating_add(1), 50) {
+        return PreflightCheck {
+            id: "port".into(),
+            ok: true,
+            message: format!(
+                "Port {port} is busy, but fallback port {fallback} is available (app will auto-switch)."
             ),
             required: true,
         };
@@ -163,15 +192,159 @@ fn check_port() -> PreflightCheck {
         id: "port".into(),
         ok: false,
         message: format!(
-            "Port {port} is in use by another program (not this app's backend). \
-             Stop that process or end your manual `uv run` in a terminal, then Re-check."
+            "Port {port} is busy and no fallback port was found nearby. \
+             Stop the conflicting process, then Re-check."
         ),
         required: true,
     }
 }
 
-fn backend_already_running(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_err() && probe_live_voice_backend(port)
+fn parse_live_voice_ready(line: &str) -> Option<u16> {
+    let line = line.trim();
+    let rest = line.strip_prefix("LIVE_VOICE_READY")?;
+    let port_str = rest.strip_prefix("port=")?.trim();
+    port_str.parse().ok()
+}
+
+fn pids_listening_on_port(port: u16) -> HashSet<u32> {
+    let mut pids = HashSet::new();
+    let port_needle = format!(":{port}");
+    #[cfg(windows)]
+    {
+        let Ok(output) = cmd_hidden("netstat").args(["-ano"]).output() else {
+            return pids;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            if !line.contains("LISTENING") || !line.contains(&port_needle) {
+                continue;
+            }
+            if let Some(pid) = line.split_whitespace().last() {
+                if let Ok(n) = pid.parse::<u32>() {
+                    pids.insert(n);
+                }
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        let Ok(output) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("lsof -ti tcp:{port} -sTCP:LISTEN 2>/dev/null"))
+            .output()
+        else {
+            return pids;
+        };
+        for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
+            if let Ok(n) = pid.parse::<u32>() {
+                pids.insert(n);
+            }
+        }
+    }
+    pids
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn cmd_hidden(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+fn kill_pid_tree(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = cmd_hidden("taskkill")
+            .args(["/PID", &pid.to_string(), "/F", "/T"])
+            .output();
+    }
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .args(["-9", &format!("-{pid}")])
+            .output();
+    }
+}
+
+/// Best-effort kill of whatever is listening on the port (orphan sidecar).
+fn kill_process_listening_on_port(port: u16) {
+    for pid in pids_listening_on_port(port) {
+        kill_pid_tree(pid);
+    }
+    std::thread::sleep(Duration::from_millis(150));
+}
+
+fn shutdown_voice_backend(app: &AppHandle) {
+    if let Some(bridge) = app.try_state::<VoiceBridgeState>() {
+        voice_ws_disconnect_internal(bridge.inner());
+    }
+    if let Some(backend) = app.try_state::<BackendState>() {
+        // Avoid blocking the window close path on Windows: only kill the tracked PID tree.
+        // Port-based scanning can stall (netstat), so keep shutdown best-effort + fast.
+        let pid = backend.pid.lock().ok().and_then(|p| *p);
+        std::thread::spawn(move || {
+            if let Some(pid) = pid {
+                kill_pid_tree(pid);
+            }
+        });
+    }
+}
+
+fn port_is_free(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// Pick a listen port, clearing stale listeners on the preferred port when needed.
+fn allocate_backend_port(preferred: u16) -> Result<u16, String> {
+    if port_is_free(preferred) {
+        return Ok(preferred);
+    }
+    kill_process_listening_on_port(preferred);
+    if port_is_free(preferred) {
+        return Ok(preferred);
+    }
+    first_free_port(preferred.saturating_add(1), 50).ok_or_else(|| {
+        format!(
+            "Could not find a free local port for voice backend (preferred {preferred})."
+        )
+    })
+}
+
+fn stop_backend_internal(state: &BackendState) {
+    let tracked_pid = state.pid.lock().ok().and_then(|p| *p);
+    if let Ok(mut lock) = state.child.lock() {
+        if let Some(child) = lock.take() {
+            let pid = child.pid();
+            let _ = child.kill();
+            kill_pid_tree(pid);
+        }
+    }
+    if let Some(pid) = tracked_pid {
+        kill_pid_tree(pid);
+    }
+
+    let preferred = resolve_port();
+    kill_process_listening_on_port(preferred);
+    if let Some(port) = state.port.lock().ok().and_then(|p| *p) {
+        if port != preferred {
+            kill_process_listening_on_port(port);
+        }
+    }
+
+    if let Ok(mut p) = state.port.lock() {
+        *p = None;
+    }
+    if let Ok(mut pid) = state.pid.lock() {
+        *pid = None;
+    }
 }
 
 fn check_lm_studio(lm_base_url: &str) -> PreflightCheck {
@@ -240,8 +413,42 @@ fn run_preflight(app: AppHandle, lm_base_url: Option<String>) -> PreflightResult
     PreflightResult { checks, hard_ok }
 }
 
+struct StartInProgressGuard<'a> {
+    state: &'a BackendState,
+}
+
+impl Drop for StartInProgressGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut flag) = self.state.start_in_progress.lock() {
+            *flag = false;
+        }
+    }
+}
+
 #[tauri::command]
 async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result<u16, String> {
+    {
+        let mut starting = state.start_in_progress.lock().map_err(|e| e.to_string())?;
+        if *starting {
+            let port = state
+                .port
+                .lock()
+                .ok()
+                .and_then(|p| *p)
+                .unwrap_or_else(resolve_port);
+            if probe_live_voice_backend(port) {
+                return Ok(port);
+            }
+            return Err(
+                "Voice backend is still starting. Wait a moment and try again.".into(),
+            );
+        }
+        *starting = true;
+    }
+    let _start_guard = StartInProgressGuard {
+        state: state.inner(),
+    };
+
     let pre = run_preflight(app.clone(), None);
     if !pre.hard_ok {
         return Err(
@@ -250,16 +457,26 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         );
     }
 
-    let port = resolve_port();
-
-    let mut lock = state.child.lock().map_err(|e| e.to_string())?;
-    if lock.is_some() {
-        return Ok(port);
+    {
+        let mut lock = state.child.lock().map_err(|e| e.to_string())?;
+        if lock.is_some() {
+            let active_port = state
+                .port
+                .lock()
+                .map_err(|e| e.to_string())?
+                .unwrap_or_else(resolve_port);
+            if probe_live_voice_backend(active_port) {
+                return Ok(active_port);
+            }
+            if let Some(child) = lock.take() {
+                let _ = child.kill();
+            }
+            kill_process_listening_on_port(active_port);
+        }
     }
 
-    if backend_already_running(port) {
-        return Ok(port);
-    }
+    let preferred_port = resolve_port();
+    let port = allocate_backend_port(preferred_port)?;
 
     let backend_dir = backend_dir(&app)?;
     let attachments_dir = attachments::attachments_dir(&app)?;
@@ -287,12 +504,30 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         .spawn()
         .map_err(|e| e.to_string())?;
 
+    let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<u16, String>>(1);
+    let ready_sent = Arc::new(AtomicBool::new(false));
+    let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+
     let app_monitor = app.clone();
+    let ready_sent_monitor = ready_sent.clone();
+    let ready_tx_monitor = ready_tx.clone();
     tauri::async_runtime::spawn(async move {
         let mut stderr_tail = String::new();
         let mut exit_code: Option<i32> = None;
         while let Some(event) = rx.recv().await {
             match event {
+                CommandEvent::Stdout(line) => {
+                    let chunk = String::from_utf8_lossy(&line);
+                    for line in chunk.lines() {
+                        if let Some(ready_port) = parse_live_voice_ready(line) {
+                            if !ready_sent_monitor.swap(true, Ordering::SeqCst) {
+                                if let Some(tx) = ready_tx_monitor.lock().ok().and_then(|mut g| g.take()) {
+                                    let _ = tx.send(Ok(ready_port));
+                                }
+                            }
+                        }
+                    }
+                }
                 CommandEvent::Stderr(line) => {
                     let chunk = String::from_utf8_lossy(&line);
                     stderr_tail.push_str(&chunk);
@@ -303,6 +538,24 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
                 }
                 CommandEvent::Terminated(payload) => {
                     exit_code = payload.code;
+                    if !ready_sent_monitor.load(Ordering::SeqCst) {
+                        let detail = stderr_tail.trim();
+                        let msg = if detail.is_empty() {
+                            format!(
+                                "Voice backend exited before ready (code {:?}).",
+                                exit_code.unwrap_or(-1)
+                            )
+                        } else {
+                            format!(
+                                "Voice backend exited before ready (code {:?}): {}",
+                                exit_code.unwrap_or(-1),
+                                detail.chars().take(400).collect::<String>()
+                            )
+                        };
+                        if let Some(tx) = ready_tx_monitor.lock().ok().and_then(|mut g| g.take()) {
+                            let _ = tx.send(Err(msg));
+                        }
+                    }
                     break;
                 }
                 _ => {}
@@ -312,6 +565,12 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         if let Some(backend) = app_monitor.try_state::<BackendState>() {
             if let Ok(mut guard) = backend.child.lock() {
                 *guard = None;
+            }
+            if let Ok(mut p) = backend.port.lock() {
+                *p = None;
+            }
+            if let Ok(mut pid) = backend.pid.lock() {
+                *pid = None;
             }
         }
 
@@ -338,8 +597,112 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         );
     });
 
-    *lock = Some(child);
-    Ok(port)
+    let uv_pid = child.pid();
+    {
+        let mut lock = state.child.lock().map_err(|e| e.to_string())?;
+        *lock = Some(child);
+    }
+    if let Ok(mut pid_guard) = state.pid.lock() {
+        *pid_guard = Some(uv_pid);
+    }
+
+    let ready_result = tauri::async_runtime::spawn_blocking(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            // If stdout readiness line was missed, still allow successful startup.
+            if probe_live_voice_backend(port) {
+                return Ok(port);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(
+                    "Voice backend did not become ready within 120s. \
+                     Run `uv sync` in the bundled backend folder and check session.log."
+                        .into(),
+                );
+            }
+            match ready_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(result) => return result,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Voice backend ready channel closed unexpectedly.".into());
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Voice backend wait task failed.".to_string())?;
+
+    let ready_port = match ready_result {
+        Ok(p) => p,
+        Err(e) => {
+            stop_backend_internal(state.inner());
+            return Err(e);
+        }
+    };
+
+    if !probe_live_voice_backend(ready_port) {
+        stop_backend_internal(state.inner());
+        return Err(format!(
+            "Voice backend reported ready on port {ready_port} but WebSocket probe failed."
+        ));
+    }
+
+    if let Ok(mut p) = state.port.lock() {
+        *p = Some(ready_port);
+    }
+    Ok(ready_port)
+}
+
+fn default_models_root_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("vadana")
+        .join("models")
+}
+
+fn supertonic_cli_args(
+    model: &str,
+    flag: &str,
+    models_root: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "run".to_string(),
+        "python".to_string(),
+        "-m".to_string(),
+        "live_voice.download_supertonic".to_string(),
+        flag.to_string(),
+        "--model".to_string(),
+        model.to_string(),
+    ];
+    if let Some(root) = models_root.map(str::trim).filter(|s| !s.is_empty()) {
+        args.push("--models-root".to_string());
+        args.push(root.to_string());
+    }
+    args
+}
+
+#[tauri::command]
+fn default_models_root() -> String {
+    default_models_root_path().to_string_lossy().into_owned()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn pick_models_folder(current: Option<String>) -> Option<String> {
+    let mut dialog = rfd::FileDialog::new();
+    if let Some(cur) = current.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let path = PathBuf::from(cur);
+        if path.is_dir() {
+            dialog = dialog.set_directory(path);
+        }
+    } else {
+        let default = default_models_root_path();
+        if default.is_dir() {
+            dialog = dialog.set_directory(default);
+        }
+    }
+    dialog
+        .pick_folder()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 fn normalize_supertonic_model(model: Option<String>) -> String {
@@ -374,24 +737,18 @@ pub struct SupertonicModelStatus {
 async fn check_supertonic_model(
     app: AppHandle,
     model: Option<String>,
+    models_root: Option<String>,
 ) -> Result<SupertonicModelStatus, String> {
     let backend_dir = backend_dir(&app)?;
     let model = normalize_supertonic_model(model);
     let model_for_cmd = model.clone();
+    let uv_args = supertonic_cli_args(&model_for_cmd, "--check", models_root.as_deref());
 
     let (tx, rx) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let out = Command::new("uv")
             .current_dir(&backend_dir)
-            .args([
-                "run",
-                "python",
-                "-m",
-                "live_voice.download_supertonic",
-                "--check",
-                "--model",
-                &model_for_cmd,
-            ])
+            .args(&uv_args)
             .output();
         let _ = tx.send(out);
     });
@@ -441,23 +798,17 @@ async fn check_supertonic_model(
 async fn download_supertonic_model(
     app: AppHandle,
     model: Option<String>,
+    models_root: Option<String>,
 ) -> Result<(), String> {
     let backend_dir = backend_dir(&app)?;
     let model = normalize_supertonic_model(model);
     let app_emit = app.clone();
+    let uv_args = supertonic_cli_args(&model, "--download", models_root.as_deref());
 
     let (mut rx, _child) = app
         .shell()
         .command("uv")
-        .args([
-            "run",
-            "python",
-            "-m",
-            "live_voice.download_supertonic",
-            "--download",
-            "--model",
-            &model,
-        ])
+        .args(&uv_args)
         .current_dir(backend_dir)
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -522,10 +873,7 @@ async fn download_supertonic_model(
 
 #[tauri::command]
 async fn stop_backend(state: State<'_, BackendState>) -> Result<(), String> {
-    let mut lock = state.child.lock().map_err(|e| e.to_string())?;
-    if let Some(child) = lock.take() {
-        let _ = child.kill();
-    }
+    stop_backend_internal(state.inner());
     Ok(())
 }
 
@@ -695,6 +1043,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations(
@@ -742,6 +1091,9 @@ pub fn run() {
         )
         .manage(BackendState {
             child: Mutex::new(None),
+            port: Mutex::new(None),
+            pid: Mutex::new(None),
+            start_in_progress: Mutex::new(false),
         })
         .manage(VoiceBridgeState {
             alive: Mutex::new(None),
@@ -752,6 +1104,8 @@ pub fn run() {
             stop_backend,
             download_supertonic_model,
             check_supertonic_model,
+            default_models_root,
+            pick_models_folder,
             run_preflight,
             get_protocol_version,
             voice_ws_connect,
@@ -774,17 +1128,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                if let Some(bridge) = app.try_state::<VoiceBridgeState>() {
-                    voice_ws_disconnect_internal(bridge.inner());
+            match event {
+                tauri::RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
+                    ..
                 }
-                if let Some(backend) = app.try_state::<BackendState>() {
-                    if let Ok(mut guard) = backend.child.lock() {
-                        if let Some(child) = guard.take() {
-                            let _ = child.kill();
-                        }
-                    }
+                => {
+                    // Show "closing" UI and force exit after cleanup.
+                    api.prevent_close();
+                    let _ = app.emit("app-closing", ());
+                    shutdown_voice_backend(app);
+                    let app2 = app.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(900));
+                        app2.exit(0);
+                    });
                 }
+                | tauri::RunEvent::ExitRequested { .. }
+                | tauri::RunEvent::Exit => shutdown_voice_backend(app),
+                _ => {}
             }
         });
 }

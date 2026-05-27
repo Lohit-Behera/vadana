@@ -22,6 +22,47 @@ uv sync
 uv run python main.py
 ```
 
+## Runtime choice (CPU vs CUDA)
+
+Vadana can run on **CPU**. If you have an **NVIDIA GPU** and want faster **Whisper** (Whisper = GPU-backed STT), set up **CUDA** instead.
+
+### CPU only (recommended)
+
+```powershell
+cd backend
+uv sync
+uv run python main.py
+```
+
+### CUDA (Whisper GPU) + optional TTS GPU
+
+1. Install CUDA PyTorch (CUDA wheels) and ONNX Runtime GPU:
+
+```powershell
+cd backend
+uv sync
+uv pip uninstall torch torchaudio onnxruntime
+uv pip install torch torchaudio --reinstall --index-url https://download.pytorch.org/whl/cu124
+uv pip install onnxruntime-gpu --reinstall
+```
+
+2. Verify Whisper sees the GPU:
+
+```powershell
+cd backend
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+3. Start the sidecar:
+
+```powershell
+cd backend
+uv run python main.py
+```
+
+Notes:
+- If you run `uv sync` later, it may revert packages back to CPU depending on your lockfile. If CUDA flips back to CPU, rerun the CUDA install steps above.
+
 You should see:
 
 ```text

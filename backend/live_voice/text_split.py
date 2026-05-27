@@ -2,6 +2,30 @@
 
 from __future__ import annotations
 
+import re
+
+
+_WORD_RE = re.compile(r"\b[\w'-]+\b")
+
+
+def word_count(text: str) -> int:
+    """Rough spoken-word count used for initial TTS buffering."""
+    return len(_WORD_RE.findall(text))
+
+
+def should_start_tts(
+    text_buffer: str,
+    elapsed_s: float,
+    *,
+    min_words: int = 12,
+    max_wait_s: float = 2.8,
+) -> bool:
+    """Start speaking when enough words arrive or a max wait is reached."""
+    if not text_buffer.strip():
+        return False
+    if word_count(text_buffer) >= min_words:
+        return True
+    return elapsed_s >= max_wait_s
 
 def best_sentence_delim_index(buf: str, delims: str = ".?!;:\n") -> int:
     """Earliest sentence delimiter in ``buf``, or -1.

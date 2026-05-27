@@ -3,6 +3,12 @@ import { Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuLabel,
@@ -26,9 +32,10 @@ type Voice = ReturnType<typeof useVoiceSession>;
 type Props = {
   chats: Chats;
   v: Voice;
+  compact?: boolean;
 };
 
-export function ChatTtsPicker({ chats, v }: Props) {
+export function ChatTtsPicker({ chats, v, compact = false }: Props) {
   const [open, setOpen] = useState(false);
   const [voice, setVoice] = useState("");
   const [lang, setLang] = useState("");
@@ -70,19 +77,34 @@ export function ChatTtsPicker({ chats, v }: Props) {
   const hasOverride =
     fromSelectVoiceValue(voice).length > 0 || fromSelectLangValue(lang).length > 0;
 
+  const tooltip = hasOverride
+    ? "Voice & language (chat override)"
+    : "Voice & language";
+
+  const trigger = (
+    <Button
+      type="button"
+      variant={hasOverride ? "secondary" : "ghost"}
+      size={compact ? "icon-sm" : "sm"}
+      className={cn(compact ? "size-8" : "gap-1.5")}
+    >
+      <Volume2 className="size-3.5" />
+      {!compact ? (hasOverride ? "Voice (chat)" : "Voice") : null}
+    </Button>
+  );
+
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant={hasOverride ? "default" : "outline"}
-          size="sm"
-          className="gap-1.5"
-        >
-          <Volume2 className="size-3.5" />
-          {hasOverride ? "Voice (chat)" : "Voice"}
-        </Button>
-      </DropdownMenuTrigger>
+      {compact ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">{tooltip}</TooltipContent>
+        </Tooltip>
+      ) : (
+        <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
+      )}
       <DropdownMenuContent className="w-80" align="end">
         <DropdownMenuLabel>Voice & language (this chat)</DropdownMenuLabel>
         <DropdownMenuSeparator />

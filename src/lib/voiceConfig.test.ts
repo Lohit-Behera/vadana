@@ -43,6 +43,7 @@ describe("settingsToVoiceConfig", () => {
       supertonic_voice: "M1",
       supertonic_lang: "hi",
       supertonic_model: "supertonic-3",
+      models_root: "",
       attachments_dir: "",
       knowledge_mode: "off",
       knowledge_selection: { folder_ids: [], file_ids: [] },

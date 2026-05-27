@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import numpy as np
 
@@ -12,14 +13,25 @@ _log = logging.getLogger(__name__)
 class STTEngine:
     """Uses the `openai-whisper` package (`import whisper`)."""
 
-    def __init__(self, model_size: str, device: str | None) -> None:
+    def __init__(
+        self,
+        model_size: str,
+        device: str | None,
+        *,
+        download_root: str | Path | None = None,
+    ) -> None:
         import torch
         import whisper
 
         dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model_size = str(model_size)
         self.device = dev
-        self._model = whisper.load_model(model_size, device=dev)
+        load_kwargs: dict[str, object] = {}
+        if download_root:
+            root = Path(download_root)
+            root.mkdir(parents=True, exist_ok=True)
+            load_kwargs["download_root"] = str(root)
+        self._model = whisper.load_model(model_size, device=dev, **load_kwargs)
         self._fp16 = bool(dev == "cuda" and torch.cuda.is_available())
         _log.info(
             "Loaded openai-whisper model=%r device=%s fp16=%s",

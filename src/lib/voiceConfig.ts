@@ -22,6 +22,8 @@ export type VoiceWsConfig = {
   supertonic_voice: string;
   supertonic_lang: string;
   supertonic_model: string;
+  /** Root for Whisper / Supertonic / torch hub caches (default ~/vadana/models). */
+  models_root: string;
   /** Absolute path where Tauri stages image/PDF files for the sidecar. */
   attachments_dir: string;
   knowledge_mode: "off" | "all_enabled" | "selected";
@@ -101,6 +103,7 @@ export function settingsToVoiceConfig(
     supertonic_voice: chatVoice || s.supertonicVoice.trim(),
     supertonic_lang: chatLang || s.supertonicLang.trim() || "en",
     supertonic_model: s.supertonicModel.trim() || "supertonic-3",
+    models_root: s.modelsRoot.trim(),
     attachments_dir: opts?.attachmentsDir?.trim() ?? "",
     knowledge_mode: opts?.knowledge?.mode ?? "off",
     knowledge_selection: opts?.knowledge?.selection ?? {

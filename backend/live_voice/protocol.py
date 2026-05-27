@@ -25,6 +25,7 @@ ServerMsgType = Literal[
     "llm_token",
     "llm_reasoning_token",
     "assistant_text",
+    "audio_level",
     "error",
     "notice",
     "interrupt_ack",

@@ -22,6 +22,7 @@ DEFAULT_BASE: dict[str, str] = {
     "ollama": "http://127.0.0.1:11434",
     "openai": "https://api.openai.com/v1",
     "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
 }
 
 
@@ -110,6 +111,14 @@ def list_models_for_provider(
         return _openai_compatible_models(
             url=f"{base}/models",
             provider="groq",
+            api_key=api_key,
+        )
+
+    if prov == "openrouter":
+        base = _normalize_openai_base(base_url or DEFAULT_BASE["openrouter"])
+        return _openai_compatible_models(
+            url=f"{base}/models",
+            provider="openrouter",
             api_key=api_key,
         )
 

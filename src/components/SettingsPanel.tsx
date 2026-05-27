@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { CheckCircle2, Download, HardDrive } from "lucide-react";
+import { CheckCircle2, Download, HardDrive, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import type { useVoiceSession } from "@/hooks/useVoiceSession";
 import {
@@ -8,7 +8,10 @@ import {
   startSupertonicDownload,
   type SupertonicModelStatus,
 } from "@/lib/supertonic";
-import { saveVoiceSettings } from "@/lib/settings";
+import {
+  DEFAULT_VOICE_SYSTEM_PROMPT,
+  saveVoiceSettings,
+} from "@/lib/settings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -81,9 +84,11 @@ function ProgressBar({ value }: { value: number }) {
 
 function SupertonicDownloadBlock({
   modelId,
+  modelsRoot,
   disabled,
 }: {
   modelId: string;
+  modelsRoot: string;
   disabled: boolean;
 }) {
   const [status, setStatus] = useState<SupertonicModelStatus | null>(null);
@@ -96,7 +101,7 @@ function SupertonicDownloadBlock({
     const id = modelId.trim() || "supertonic-3";
     setChecking(true);
     try {
-      const s = await checkSupertonicModel(id);
+      const s = await checkSupertonicModel(id, modelsRoot);
       setStatus(s);
     } catch (e) {
       setStatus(null);
@@ -106,7 +111,7 @@ function SupertonicDownloadBlock({
     } finally {
       setChecking(false);
     }
-  }, [modelId]);
+  }, [modelId, modelsRoot]);
 
   useEffect(() => {
     void refresh();
@@ -178,7 +183,7 @@ function SupertonicDownloadBlock({
           setDownloading(true);
           setProgress(0);
           setProgressMsg("Starting download…");
-          void startSupertonicDownload(id).catch((e: unknown) => {
+          void startSupertonicDownload(id, modelsRoot).catch((e: unknown) => {
             setDownloading(false);
             toast.error("Download failed", {
               description: e instanceof Error ? e.message : String(e),
@@ -202,22 +207,7 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
     section === "all" || section === part;
 
   const persistNow = useCallback(async () => {
-    await saveVoiceSettings({
-      llmProvider: v.llmProvider,
-      lmBaseUrl: v.lmBaseUrl,
-      model: v.model,
-      maxContextTokens: v.maxContextTokens,
-      pushToTalk: v.pushToTalk,
-      inputGain: v.inputGain,
-      vadSensitivity: v.vadSensitivity,
-      systemPrompt: v.systemPrompt,
-      piperModel: v.piperModel,
-      whisperModel: v.whisperModel,
-      vadBargeIn: v.vadBargeIn,
-      supertonicVoice: v.supertonicVoice,
-      supertonicLang: v.supertonicLang,
-      supertonicModel: v.supertonicModel,
-    });
+    await saveVoiceSettings(v.currentSettings());
     toast.success("Settings saved", {
       description: "Stored on disk (persists after restart).",
     });
@@ -235,12 +225,12 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
 
       {show("voice") && (
       <Section
-        title="Speech-to-text (Whisper)"
-        summary="Local STT model"
+        title="Speech-to-text"
+        summary="Turns your voice into text on this device"
         defaultOpen
       >
         <div className="space-y-1.5">
-          <Label htmlFor="whisper">Whisper checkpoint</Label>
+          <Label htmlFor="whisper">Recognition quality</Label>
           <Input
             id="whisper"
             value={v.whisperModel}
@@ -264,19 +254,29 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
             ))}
           </div>
           <p className="text-muted-foreground text-xs">
-            Local OpenAI Whisper via PyTorch. First use downloads weights.
-            Stop and start session after changing size.
+            Larger models are more accurate but slower. The first time you pick a
+            size, it downloads in the background. Stop and start your session
+            after changing this.
           </p>
         </div>
       </Section>
       )}
 
       {show("voice") && (
-      <Section title="Microphone & VAD" summary="PTT, gain, barge-in" defaultOpen>
+      <Section
+        title="Microphone"
+        summary="How the app listens and when you can interrupt"
+        defaultOpen
+      >
         <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="ptt" className="text-sm font-normal">
-            Push-to-talk (off = auto VAD)
-          </Label>
+          <div className="min-w-0 pr-2">
+            <Label htmlFor="ptt" className="text-sm font-normal">
+              Hold button to speak
+            </Label>
+            <p className="text-muted-foreground text-xs">
+              Off: listens automatically when you talk
+            </p>
+          </div>
           <Switch
             id="ptt"
             checked={v.pushToTalk}
@@ -285,9 +285,14 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
           />
         </div>
         <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="barge" className="text-sm font-normal">
-            VAD interrupts assistant
-          </Label>
+          <div className="min-w-0 pr-2">
+            <Label htmlFor="barge" className="text-sm font-normal">
+              Stop assistant when I speak
+            </Label>
+            <p className="text-muted-foreground text-xs">
+              Lets you jump in while it is talking
+            </p>
+          </div>
           <Switch
             id="barge"
             checked={v.vadBargeIn}
@@ -297,7 +302,7 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
         </div>
         <div className="space-y-2">
           <div className="flex justify-between text-xs">
-            <Label>Input gain</Label>
+            <Label>Microphone volume</Label>
             <span className="text-muted-foreground tabular-nums">
               {v.inputGain.toFixed(2)}
             </span>
@@ -313,7 +318,7 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
         </div>
         <div className="space-y-2">
           <div className="flex justify-between text-xs">
-            <Label>VAD sensitivity</Label>
+            <Label>Listening sensitivity</Label>
             <span className="text-muted-foreground tabular-nums">
               {v.vadSensitivity.toFixed(2)}
             </span>
@@ -326,6 +331,9 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
             onValueChange={(x) => v.setVadSensitivity(x[0] ?? 0.5)}
             disabled={disabled}
           />
+          <p className="text-muted-foreground text-xs">
+            Higher picks up quieter speech; lower ignores more background noise.
+          </p>
         </div>
       </Section>
       )}
@@ -363,6 +371,7 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
 
         <SupertonicDownloadBlock
           modelId={v.supertonicModel}
+          modelsRoot={v.modelsRoot}
           disabled={disabled}
         />
 
@@ -380,12 +389,34 @@ export function SettingsPanel({ v, disabled, section = "all" }: Props) {
 
       {show("system") && (
       <Section title="System prompt" summary="Assistant behavior">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-muted-foreground text-xs">
+            Shipped default includes optional Supertonic 3 expression tags.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            disabled={
+              disabled ||
+              v.systemPrompt.trim() === DEFAULT_VOICE_SYSTEM_PROMPT.trim()
+            }
+            onClick={() => {
+              v.setSystemPrompt(DEFAULT_VOICE_SYSTEM_PROMPT);
+              toast.success("System prompt reset to default");
+            }}
+          >
+            <RotateCcw className="size-3.5" />
+            Reset to default
+          </Button>
+        </div>
         <Textarea
-          rows={6}
+          rows={12}
           value={v.systemPrompt}
           onChange={(e) => v.setSystemPrompt(e.target.value)}
           disabled={disabled}
-          className="text-sm"
+          className="font-mono text-xs leading-relaxed"
         />
       </Section>
       )}

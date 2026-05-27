@@ -10,7 +10,9 @@
     "test": "vitest",
     "test:run": "vitest run",
     "tauri": "tauri",
-    "sync-backend": "powershell -ExecutionPolicy Bypass -File scripts/sync-backend-resources.ps1"
+    "sync-backend": "powershell -ExecutionPolicy Bypass -File scripts/sync-backend-resources.ps1",
+    "repair-backend": "powershell -ExecutionPolicy Bypass -File scripts/repair-backend-venv.ps1",
+    "build:release": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.2.9",

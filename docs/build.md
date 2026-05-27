@@ -256,11 +256,27 @@ This project uses Tauri updater signing keys:
 - private key: `C:\Users\lohit\.tauri\vadana.key`
 - public key: already set in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`
 
-Set env var before signing:
+Set env vars before signing (GitHub secrets are **not** available in local shells):
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\lohit\.tauri\vadana.key"
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\vadana-2026p.key" -Raw
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<your key password>"
+pnpm tauri build --bundles nsis
 ```
+
+Or copy `.env.example` to `.env` (already in `.gitignore`), fill in your key + password, then:
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+From **CMD**:
+
+```cmd
+scripts\build-release.cmd
+```
+
+Tauri does **not** read `.env` by itself; the script loads it and sets process env vars before `pnpm tauri build`.
 
 Generate signatures for the artifact you reference in `latest.json` (for example NSIS `.exe`).
 

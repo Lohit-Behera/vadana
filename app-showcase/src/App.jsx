@@ -6,7 +6,7 @@ const DOCS = `${REPO}/blob/main/README.md`
 const BUILD = `${REPO}/blob/main/docs/build.md`
 const RELEASES = `${REPO}/releases`
 const DOWNLOAD =
-  'https://github.com/Lohit-Behera/vadana/releases/download/v0.2.0-beta.1/Vadana_0.2.0-beta.1_x64-setup.exe'
+  'https://github.com/Lohit-Behera/vadana/releases/download/v0.2.1/Vadana_0.2.1_x64-setup.exe'
 
 const features = [
   {
@@ -184,7 +184,7 @@ function App() {
             <p className="mb-5 inline-flex flex-wrap items-center justify-center gap-2">
               <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/15 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-amber-200">
                 <span className="size-1.5 rounded-full bg-amber-400 shadow-[0_0_8px] shadow-amber-400" />
-                Public beta
+                Stable release
               </span>
               <span className="inline-flex items-center gap-2 rounded-full border border-brand-400/20 bg-brand-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-brand-300">
                 Open source · Local-first
@@ -212,7 +212,7 @@ function App() {
                     d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12M12 16.5V3"
                   />
                 </Icon>
-                Download beta for Windows
+                Download for Windows
               </a>
               <a
                 href={REPO}

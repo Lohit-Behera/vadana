@@ -127,6 +127,27 @@ fn backend_venv_python(backend_dir: &Path) -> PathBuf {
     }
 }
 
+/// Prepend torch native libs to PATH so c10.dll loads when spawned from the GUI app.
+#[cfg(windows)]
+fn windows_backend_path_env(backend_dir: &Path) -> Option<String> {
+    let torch_lib = backend_dir
+        .join(".venv")
+        .join("Lib")
+        .join("site-packages")
+        .join("torch")
+        .join("lib");
+    if !torch_lib.is_dir() {
+        return None;
+    }
+    let current = std::env::var("PATH").unwrap_or_default();
+    Some(format!("{};{}", torch_lib.display(), current))
+}
+
+#[cfg(not(windows))]
+fn windows_backend_path_env(_backend_dir: &Path) -> Option<String> {
+    None
+}
+
 /// True when `.venv` is missing or older than `uv.lock` (e.g. after an app update).
 fn backend_venv_needs_sync(backend_dir: &Path) -> bool {
     let venv_py = backend_venv_python(backend_dir);
@@ -593,12 +614,13 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
     }
 
     let python = backend_venv_python(&backend_dir);
-    let (mut rx, child) = app
-        .shell()
-        .command(&python)
-        .args(["main.py"])
-        .current_dir(&backend_dir)
+    let mut sidecar = app.shell().command(&python).args(["main.py"]).current_dir(&backend_dir);
+    if let Some(path) = windows_backend_path_env(&backend_dir) {
+        sidecar = sidecar.env("PATH", path);
+    }
+    let (mut rx, child) = sidecar
         .env("LIVE_VOICE_PORT", port.to_string())
+        .env("KMP_DUPLICATE_LIB_OK", "TRUE")
         .env(
             "LIVE_VOICE_ATTACHMENTS_DIR",
             attachments_dir.to_string_lossy().to_string(),

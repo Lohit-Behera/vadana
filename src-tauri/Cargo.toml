@@ -1,6 +1,6 @@
 [package]
 name = "vadana"
-version = "0.2.3"
+version = "0.2.4"
 description = "Vadana — local voice assistant (Tauri + Python sidecar)"
 authors = ["lohit"]
 edition = "2021"

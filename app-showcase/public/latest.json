@@ -1,11 +1,11 @@
 {
-  "pub_date": "2026-05-28T05:12:28Z",
+  "version": "0.2.4",
+  "notes": "Fix WinError 1114: preload PyTorch c10.dll and set PATH when the desktop app spawns the CPU backend.",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.3/Vadana_0.2.3_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0JmTWUxNjk3QzN4MVJuTzRUM054QklXem50eXA3bGo0U2FITFNCK1ZNUWo4dko0ajJJWUJxb1pEQXRhOFppQkx0MjA4RHFMUjBpL1lUK0NaSGJveUFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5OTQ1MTQ3CWZpbGU6VmFkYW5hXzAuMi4zX3g2NC1zZXR1cC5leGUKTVNBbnlYbWNtU3F0TEI5aVB0WTZ0KzBod1dWakhzSFZFV3VBT1NjK0VNbDlTRTJXSG5weDU4NExXSFJlVjJVZzRNNlFGUWM2bDhxUDhRcUxRdGZxQVE9PQo="
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0p3NWFrRFd5cE5qYS9iY3V5YXhiV3Y1a0diNnZnSFZ4Z2VGMTQrUHVEeWM0VEJYSEg1b25rNHhhTkFxOHdxUXROQS9TaXZyaldNRXZkWkUrMThIeFFJPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5OTQ2MTk2CWZpbGU6VmFkYW5hXzAuMi40X3g2NC1zZXR1cC5leGUKWXR4K3Mza1ZtcHlOVmY2UjljZEVVR2lCZ0dzU0x1Ynp4ZlYvTWdUZGR3aTlvc1NpMzU0ZXZZdHdobjJtdmZ2L0VPNWZWZ3hXcXNyMHJxWVNjalJZQVE9PQo=",
+      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.4/Vadana_0.2.4_x64-setup.exe"
     }
   },
-  "version": "0.2.3",
-  "notes": "Fix Windows backend startup: CPU PyTorch DLL path when launched from the desktop app, early torch warmup, and explicit CPU-only torch wheels."
+  "pub_date": "2026-05-28T05:29:57Z"
 }

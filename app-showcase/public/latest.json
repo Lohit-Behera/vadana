@@ -1,11 +1,11 @@
 {
-  "version": "0.2.0-beta.1",
+  "pub_date": "2026-05-28T02:22:18Z",
+  "version": "0.2.1",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.0-beta.1/Vadana_0.2.0-beta.1_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0tJQVpTdWU2TUp6QTYvOVFaNVVvcVlkaThOa0h2TlJSbGJOeGU5ZFB2SjhBRHdidzZFc0Fadms2TzVtd2xFc1pQdkxMNndYamRSbkh0YUx5Vjh1MEFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5ODk2MzY1CWZpbGU6VmFkYW5hXzAuMi4wLWJldGEuMV94NjQtc2V0dXAuZXhlClZiYVpQZ3NPc3M1YnE4RmtvcWRwTHFzMytza2FYdkRHQ3JtcVZ5SXJmU2l3bGxWa1lOa3VxU3FrWHg1ZCtkS3FtNzRtTzVHRjNqeTlXaVNqcEhLYkNnPT0K"
+      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.1/Vadana_0.2.1_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0hsZGZ0V3k5L01MT2drd0xoN3NNVWtmdG9rOXpKZFBwdjUzQnluYStFRTNIQnVUNkJXRldVVEZDb2VZcVNTQis1SW1ycHM0WUlqd3pxL3dJZE4yQ2drPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5OTM0OTM3CWZpbGU6VmFkYW5hXzAuMi4xX3g2NC1zZXR1cC5leGUKbnhaaXlwSnhGNzdjMXJDdWJ0bFNnTFNELzFvdTZyWDArYTlxbmxOTTE0QUxVSVpydXRrM05qcDFWWnd5b1Jvd2ptT3VMK1NmQnpONnVuSzM1OFpvQUE9PQo="
     }
   },
-  "pub_date": "2026-05-27T15:39:25Z",
-  "notes": "Public beta. Local voice assistant: Whisper STT, LiteLLM, on-device TTS. New UI with themes, knowledge base, and auto-update. Requires uv + LM Studio. Feedback welcome on GitHub."
+  "notes": "Bug fixes and improvements."
 }

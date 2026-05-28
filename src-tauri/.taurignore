@@ -1,0 +1,6 @@
+# Never watch Python virtualenvs (uv install here triggers endless `tauri dev` rebuilds).
+resources/backend/.venv/
+**/.venv/
+
+# Rust build output (also noisy for the watcher).
+target/

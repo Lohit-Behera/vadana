@@ -10,6 +10,13 @@ if (-not (Test-Path $src)) {
 
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 
+# Accidental `uv` runs in resources/backend create a huge .venv and break `tauri dev` file watching.
+$resourcesVenv = Join-Path $dst ".venv"
+if (Test-Path $resourcesVenv) {
+    Remove-Item -Recurse -Force $resourcesVenv
+    Write-Host "Removed resources/backend/.venv (use backend/.venv for dev)"
+}
+
 $items = @("pyproject.toml", "uv.lock", "main.py", "README.md", "live_voice")
 foreach ($item in $items) {
     $from = Join-Path $src $item

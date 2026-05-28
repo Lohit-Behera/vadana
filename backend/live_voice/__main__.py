@@ -10,6 +10,7 @@ from pathlib import Path
 
 # Avoid broken/partial hf_xet wheels breaking Hugging Face downloads (falls back to HTTP).
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("LITELLM_LOG", "ERROR")
 from typing import Any
 
 import websockets
@@ -28,9 +29,13 @@ def _setup_logging() -> None:
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     log_path = os.environ.get("LIVE_VOICE_LOG", "").strip()
     if not log_path:
+        # Fallback for manual `uv run` without the desktop app (dev only).
         local = os.environ.get("LOCALAPPDATA", "")
-        if local:
-            log_path = str(Path(local) / "vadana" / "logs" / "session.log")
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            log_path = str(Path(appdata) / "com.lohit.vadana" / "logs" / "session.log")
+        elif local:
+            log_path = str(Path(local) / "com.lohit.vadana" / "logs" / "session.log")
     if log_path:
         path = Path(log_path)
         path.parent.mkdir(parents=True, exist_ok=True)

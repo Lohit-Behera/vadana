@@ -179,24 +179,40 @@ export default function App() {
   }
 
   if (v.backendStartupLoading) {
+    const startupSteps = [
+      "Load app settings",
+      "Run readiness checks",
+      "Start backend process",
+      "Connect WebSocket bridge",
+    ];
+    let currentStep = 0;
     let title = "Starting voice backend";
     let description: string | undefined =
       "First launch can take up to a minute while dependencies load.";
     if (!v.settingsLoaded) {
       title = "Loading Vadana";
       description = undefined;
+      currentStep = 0;
     } else if (v.preflightBusy || !v.preflight) {
       title = "Checking setup";
       description = "Verifying uv, backend folder, and network ports.";
+      currentStep = 1;
     } else if (v.backendConnecting) {
       title = "Connecting to voice backend";
       description = "Starting the local Python sidecar and opening WebSocket.";
+      currentStep = 2;
+    } else if (v.preflight?.hard_ok === true && !v.backendConnected) {
+      title = "Connecting to voice backend";
+      description = "Opening the voice WebSocket bridge.";
+      currentStep = 3;
     }
     return (
       <BackendStartupScreen
         status="loading"
         title={title}
         description={description}
+        steps={startupSteps}
+        currentStep={currentStep}
       />
     );
   }

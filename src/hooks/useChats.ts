@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -343,7 +344,30 @@ export function useChats() {
         await refreshChats();
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        toast.error("Could not open chat database", { description: msg });
+        if (msg.includes("migration") && msg.includes("modified")) {
+          try {
+            await invoke("reset_chat_database");
+            await listChats();
+            await refreshChats();
+            toast.success("Chat database was reset after a schema upgrade");
+          } catch (resetErr) {
+            let pathHint = "";
+            try {
+              pathHint = await invoke<string>("chat_database_path");
+            } catch {
+              /* ignore */
+            }
+            const resetMsg =
+              resetErr instanceof Error ? resetErr.message : String(resetErr);
+            toast.error("Chat database needs a manual reset", {
+              description: pathHint
+                ? `${msg}\n\nDelete this file while Vadana is closed, then restart:\n${pathHint}\n\n(${resetMsg})`
+                : `${msg}\n\n(${resetMsg})`,
+            });
+          }
+        } else {
+          toast.error("Could not open chat database", { description: msg });
+        }
       }
     })();
   }, [refreshChats]);

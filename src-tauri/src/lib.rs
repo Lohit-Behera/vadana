@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -17,6 +17,7 @@ use std::os::windows::process::CommandExt;
 
 mod attachments;
 mod chat_title;
+mod cleanup_manifest;
 mod keyring_store;
 mod knowledge;
 mod llm_models;
@@ -114,6 +115,36 @@ fn check_uv() -> PreflightCheck {
     }
 }
 
+fn backend_venv_python(backend_dir: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return backend_dir.join(".venv").join("Scripts").join("python.exe");
+    }
+    #[cfg(not(windows))]
+    {
+        backend_dir.join(".venv").join("bin").join("python3")
+    }
+}
+
+/// Create `.venv` once; `uv run` on every app launch re-syncs and can break on Windows file locks.
+fn ensure_backend_venv(app: &AppHandle, backend_dir: &Path) -> Result<(), String> {
+    if !backend_venv_python(backend_dir).is_file() {
+        let output = cmd_hidden("uv")
+            .args(["sync", "--link-mode=copy"])
+            .current_dir(backend_dir)
+            .output()
+            .map_err(|e| format!("Failed to run uv sync: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "Backend dependencies are not installed. Run `cd backend && uv sync --link-mode=copy`.\n{stderr}"
+            ));
+        }
+    }
+    let _ = cleanup_manifest::write_uninstall_paths_manifest(app);
+    Ok(())
+}
+
 fn check_backend_dir(app: &AppHandle) -> PreflightCheck {
     match backend_dir(app) {
         Ok(p) if p.join("pyproject.toml").is_file() => PreflightCheck {
@@ -204,6 +235,25 @@ fn parse_live_voice_ready(line: &str) -> Option<u16> {
     let rest = line.strip_prefix("LIVE_VOICE_READY")?;
     let port_str = rest.strip_prefix("port=")?.trim();
     port_str.parse().ok()
+}
+
+/// Drop noisy LiteLLM stderr so startup errors show the real failure.
+fn summarize_backend_stderr(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.contains("LiteLLM:WARNING")
+                && !line.contains("litellm: could not pre-load")
+                && !line.contains("No module named 'botocore'")
+        })
+        .collect();
+    if lines.is_empty() {
+        stderr.trim().to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn pids_listening_on_port(port: u16) -> HashSet<u32> {
@@ -477,16 +527,29 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
 
     let preferred_port = resolve_port();
     let port = allocate_backend_port(preferred_port)?;
+    // Always clear listeners so a stale sidecar cannot satisfy the readiness probe.
+    kill_process_listening_on_port(port);
+    std::thread::sleep(Duration::from_millis(400));
 
     let backend_dir = backend_dir(&app)?;
+    ensure_backend_venv(&app, &backend_dir)?;
     let attachments_dir = attachments::attachments_dir(&app)?;
     let knowledge_dir = knowledge::knowledge_root(&app)?;
     let knowledge_index_dir = knowledge::knowledge_index_dir(&app)?;
+    let log_file = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())?
+        .join("session.log");
+    if let Some(parent) = log_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
 
+    let python = backend_venv_python(&backend_dir);
     let (mut rx, child) = app
         .shell()
-        .command("uv")
-        .args(["run", "python", "main.py"])
+        .command(&python)
+        .args(["main.py"])
         .current_dir(&backend_dir)
         .env("LIVE_VOICE_PORT", port.to_string())
         .env(
@@ -501,6 +564,13 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
             "LIVE_VOICE_KNOWLEDGE_INDEX_DIR",
             knowledge_index_dir.to_string_lossy().to_string(),
         )
+        .env(
+            "LIVE_VOICE_LOG",
+            log_file.to_string_lossy().to_string(),
+        )
+        // Avoid uv hardlink failures when cache and .venv are on different volumes (common on Windows).
+        .env("UV_LINK_MODE", "copy")
+        .env("LITELLM_LOG", "ERROR")
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -539,10 +609,11 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
                 CommandEvent::Terminated(payload) => {
                     exit_code = payload.code;
                     if !ready_sent_monitor.load(Ordering::SeqCst) {
-                        let detail = stderr_tail.trim();
+                        let detail = summarize_backend_stderr(&stderr_tail);
                         let msg = if detail.is_empty() {
                             format!(
-                                "Voice backend exited before ready (code {:?}).",
+                                "Voice backend exited before ready (code {:?}). \
+                                 Run `cd backend && uv sync --link-mode=copy` then retry.",
                                 exit_code.unwrap_or(-1)
                             )
                         } else {
@@ -574,10 +645,12 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
             }
         }
 
-        let detail = stderr_tail.trim();
+        let detail = summarize_backend_stderr(&stderr_tail);
         let message = if detail.is_empty() {
             format!(
-                "Voice backend exited (code {:?}).",
+                "Voice backend exited (code {:?}). \
+                 If this persists, close other Vadana/terminal sessions and run \
+                 `cd backend && uv sync --link-mode=copy`.",
                 exit_code.unwrap_or(-1)
             )
         } else {
@@ -608,21 +681,25 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
 
     let ready_result = tauri::async_runtime::spawn_blocking(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        // Do not probe immediately: a stale listener on the port causes a false ready.
+        let probe_after = std::time::Instant::now() + Duration::from_secs(3);
         loop {
-            // If stdout readiness line was missed, still allow successful startup.
-            if probe_live_voice_backend(port) {
-                return Ok(port);
-            }
             if std::time::Instant::now() >= deadline {
                 return Err(
                     "Voice backend did not become ready within 120s. \
-                     Run `uv sync` in the bundled backend folder and check session.log."
+                     Run `cd backend && uv sync --link-mode=copy` and check session.log."
                         .into(),
                 );
             }
             match ready_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(result) => return result,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if std::time::Instant::now() >= probe_after
+                        && probe_live_voice_backend(port)
+                    {
+                        return Ok(port);
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err("Voice backend ready channel closed unexpectedly.".into());
                 }
@@ -653,7 +730,7 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
     Ok(ready_port)
 }
 
-fn default_models_root_path() -> PathBuf {
+pub(crate) fn default_models_root_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("vadana")
@@ -874,6 +951,31 @@ async fn download_supertonic_model(
 #[tauri::command]
 async fn stop_backend(state: State<'_, BackendState>) -> Result<(), String> {
     stop_backend_internal(state.inner());
+    Ok(())
+}
+
+#[tauri::command]
+fn chat_database_path(app: AppHandle) -> Result<String, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("vadana.db").display().to_string())
+}
+
+/// Remove the local chat DB when migrations were applied then changed (dev upgrades).
+#[tauri::command]
+fn refresh_uninstall_paths(app: AppHandle) -> Result<(), String> {
+    cleanup_manifest::write_uninstall_paths_manifest(&app)
+}
+
+#[tauri::command]
+fn reset_chat_database(app: AppHandle) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("vadana.db");
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("Could not delete {}: {e}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -1102,6 +1204,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_backend,
             stop_backend,
+            chat_database_path,
+            reset_chat_database,
+            refresh_uninstall_paths,
             download_supertonic_model,
             check_supertonic_model,
             default_models_root,
@@ -1125,6 +1230,10 @@ pub fn run() {
             knowledge::rebuild_knowledge_index,
             llm_models::list_llm_models,
         ])
+        .setup(|app| {
+            let _ = cleanup_manifest::write_uninstall_paths_manifest(app.handle());
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

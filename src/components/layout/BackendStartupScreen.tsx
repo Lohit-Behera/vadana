@@ -7,6 +7,8 @@ type Props = {
   description?: string;
   error?: string | null;
   busy?: boolean;
+  steps?: string[];
+  currentStep?: number;
   onRetry?: () => void;
 };
 
@@ -16,6 +18,8 @@ export function BackendStartupScreen({
   description,
   error,
   busy = false,
+  steps,
+  currentStep = 0,
   onRetry,
 }: Props) {
   return (
@@ -39,12 +43,44 @@ export function BackendStartupScreen({
             {description}
           </p>
         )}
+        {status === "loading" && (
+          <p className="text-muted-foreground/90 pt-1 text-xs leading-relaxed">
+            Note: first run can take a little longer while local backend dependencies and models initialize.
+          </p>
+        )}
         {status === "failed" && error && (
           <p className="text-destructive/90 pt-1 text-sm leading-relaxed">
             {error}
           </p>
         )}
       </div>
+      {status === "loading" && steps && steps.length > 0 && (
+        <div className="bg-muted/40 w-full max-w-md rounded-xl border p-3 text-left">
+          <ol className="space-y-2 text-sm">
+            {steps.map((step, idx) => {
+              const done = idx < currentStep;
+              const active = idx === currentStep;
+              return (
+                <li
+                  key={step}
+                  className={
+                    done
+                      ? "text-muted-foreground"
+                      : active
+                        ? "text-foreground font-medium"
+                        : "text-muted-foreground/80"
+                  }
+                >
+                  <span className="mr-2 inline-block w-5 text-right">
+                    {done ? "✓" : `${idx + 1}.`}
+                  </span>
+                  {step}
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      )}
 
       {status === "failed" && onRetry && (
         <Button

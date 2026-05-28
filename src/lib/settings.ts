@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { isTauri } from "@/lib/tauri";
 
@@ -121,5 +122,10 @@ export async function saveVoiceSettings(settings: VoiceSettings): Promise<void> 
     await store.save();
   } catch {
     /* localStorage already saved */
+  }
+  try {
+    await invoke("refresh_uninstall_paths");
+  } catch {
+    /* best-effort: manifest used by uninstaller */
   }
 }

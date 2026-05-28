@@ -75,5 +75,5 @@ Write-Host "  Installer: $bundle"
 if (Test-Path $sig) {
     Write-Host "  Signature: $sig"
 } else {
-    Write-Warning "No .sig file found — check signing key and password in .env"
+    Write-Warning "No .sig file found - check signing key and password in .env"
 }

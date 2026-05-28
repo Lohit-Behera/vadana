@@ -30,6 +30,8 @@ dependencies = [
 ]
 
 [tool.uv]
+# Windows: cache and project .venv are often on different drives; copy avoids hardlink warnings/failures.
+link-mode = "copy"
 # Upstream supertonic still declares numpy<2; runtime works on NumPy 2 (see supertone-inc/supertonic-py#1).
 dependency-metadata = [
     { name = "supertonic", requires-dist = [

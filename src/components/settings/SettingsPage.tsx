@@ -24,6 +24,7 @@ import { ThemeSetting } from "@/components/ui/mode-toggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { check as checkForUpdate } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { getVersion } from "@tauri-apps/api/app";
 import {
   deleteProviderApiKey,
   hasProviderApiKey,
@@ -52,6 +53,7 @@ type Props = {
 export function SettingsPage({ v, onBack }: Props) {
   const disabled = v.sessionActive;
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [appVersion, setAppVersion] = useState("unknown");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [keySaved, setKeySaved] = useState(false);
   const [modelOptions, setModelOptions] = useState<{ id: string }[]>([]);
@@ -74,6 +76,14 @@ export function SettingsPage({ v, onBack }: Props) {
   useEffect(() => {
     setModelOptions([]);
   }, [v.llmProvider, v.lmBaseUrl]);
+
+  useEffect(() => {
+    void getVersion()
+      .then((version) => setAppVersion(version))
+      .catch(() => {
+        /* best-effort */
+      });
+  }, []);
 
   const fetchModels = useCallback(async () => {
     setFetchingModels(true);
@@ -110,12 +120,12 @@ export function SettingsPage({ v, onBack }: Props) {
     try {
       const update = await checkForUpdate();
       if (!update) {
-        toast.success("You're up to date");
+        toast.success(`You're up to date (v${appVersion})`);
         return;
       }
 
       toast.message(`Update available: ${update.version}`, {
-        description: "Downloading and installing now…",
+        description: `Current: v${appVersion}. Downloading and installing now…`,
       });
 
       await update.downloadAndInstall();
@@ -183,6 +193,9 @@ export function SettingsPage({ v, onBack }: Props) {
                   <p className="text-muted-foreground text-xs">
                     Checks for a new Vadana release and installs it.
                   </p>
+              <p className="text-muted-foreground pt-1 text-xs">
+                Current version: <code className="font-mono">v{appVersion}</code>
+              </p>
                 </div>
                 <Button
                   type="button"

@@ -76,7 +76,7 @@ The desktop app connects automatically when you click **Start session**. To run 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LIVE_VOICE_PORT` | `8765` | WebSocket listen port (binds **127.0.0.1** only) |
-| `LIVE_VOICE_LOG` | `%LOCALAPPDATA%\vadana\logs\session.log` on Windows | Optional log file path; empty disables file logging |
+| `LIVE_VOICE_LOG` | `%APPDATA%\com.lohit.vadana\logs\session.log` on Windows (set by the desktop app) | Optional log file path; empty uses the default under AppData |
 | `HF_HUB_DISABLE_XET` | `1` (set in code) | Use standard HTTP for Hugging Face downloads |
 | `LOCALAPPDATA` | — | Used to pick default log directory on Windows |
 

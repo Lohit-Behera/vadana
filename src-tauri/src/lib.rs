@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -126,23 +127,69 @@ fn backend_venv_python(backend_dir: &Path) -> PathBuf {
     }
 }
 
-/// Create `.venv` once; `uv run` on every app launch re-syncs and can break on Windows file locks.
+/// True when `.venv` is missing or older than `uv.lock` (e.g. after an app update).
+fn backend_venv_needs_sync(backend_dir: &Path) -> bool {
+    let venv_py = backend_venv_python(backend_dir);
+    if !venv_py.is_file() {
+        return true;
+    }
+    let lock = backend_dir.join("uv.lock");
+    if !lock.is_file() {
+        return false;
+    }
+    let Ok(lock_mtime) = lock.metadata().and_then(|m| m.modified()) else {
+        return false;
+    };
+    let Ok(venv_mtime) = venv_py.metadata().and_then(|m| m.modified()) else {
+        return true;
+    };
+    lock_mtime > venv_mtime
+}
+
+fn run_backend_uv_sync(backend_dir: &Path) -> Result<(), String> {
+    let output = cmd_hidden("uv")
+        .args(["sync", "--link-mode=copy"])
+        .current_dir(backend_dir)
+        .output()
+        .map_err(|e| format!("Failed to run uv sync: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Backend dependencies are not installed. Run `uv sync --link-mode=copy` in the bundled backend folder.\n{stderr}"
+        ));
+    }
+    Ok(())
+}
+
+/// Create or refresh `.venv` when missing or stale after an installer update.
 fn ensure_backend_venv(app: &AppHandle, backend_dir: &Path) -> Result<(), String> {
-    if !backend_venv_python(backend_dir).is_file() {
-        let output = cmd_hidden("uv")
-            .args(["sync", "--link-mode=copy"])
-            .current_dir(backend_dir)
-            .output()
-            .map_err(|e| format!("Failed to run uv sync: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "Backend dependencies are not installed. Run `cd backend && uv sync --link-mode=copy`.\n{stderr}"
-            ));
-        }
+    if backend_venv_needs_sync(backend_dir) {
+        run_backend_uv_sync(backend_dir)?;
     }
     let _ = cleanup_manifest::write_uninstall_paths_manifest(app);
     Ok(())
+}
+
+/// Append Python stderr to session.log so import crashes are visible on disk.
+fn persist_backend_stderr(log_file: &Path, stderr: &str, exit_code: Option<i32>) {
+    if stderr.trim().is_empty() {
+        return;
+    }
+    if let Some(parent) = log_file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let body = format!(
+        "\n--- backend stderr (exit code {:?}) ---\n{}\n",
+        exit_code,
+        stderr.trim_end()
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)
+    {
+        let _ = file.write_all(body.as_bytes());
+    }
 }
 
 fn check_backend_dir(app: &AppHandle) -> PreflightCheck {
@@ -581,6 +628,7 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
     let app_monitor = app.clone();
     let ready_sent_monitor = ready_sent.clone();
     let ready_tx_monitor = ready_tx.clone();
+    let log_file_monitor = log_file.clone();
     tauri::async_runtime::spawn(async move {
         let mut stderr_tail = String::new();
         let mut exit_code: Option<i32> = None;
@@ -601,24 +649,28 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
                 CommandEvent::Stderr(line) => {
                     let chunk = String::from_utf8_lossy(&line);
                     stderr_tail.push_str(&chunk);
-                    if stderr_tail.len() > 2000 {
-                        let start = stderr_tail.len().saturating_sub(1000);
+                    if stderr_tail.len() > 16_000 {
+                        let start = stderr_tail.len().saturating_sub(12_000);
                         stderr_tail = stderr_tail[start..].to_string();
                     }
                 }
                 CommandEvent::Terminated(payload) => {
                     exit_code = payload.code;
+                    persist_backend_stderr(&log_file_monitor, &stderr_tail, exit_code);
                     if !ready_sent_monitor.load(Ordering::SeqCst) {
                         let detail = summarize_backend_stderr(&stderr_tail);
+                        let log_hint = log_file_monitor.display();
                         let msg = if detail.is_empty() {
                             format!(
                                 "Voice backend exited before ready (code {:?}). \
-                                 Run `cd backend && uv sync --link-mode=copy` then retry.",
+                                 Run `uv sync --link-mode=copy` in the bundled backend folder, then retry. \
+                                 Details: {log_hint}",
                                 exit_code.unwrap_or(-1)
                             )
                         } else {
                             format!(
-                                "Voice backend exited before ready (code {:?}): {}",
+                                "Voice backend exited before ready (code {:?}): {} \
+                                 (full traceback in {log_hint})",
                                 exit_code.unwrap_or(-1),
                                 detail.chars().take(400).collect::<String>()
                             )
@@ -679,17 +731,18 @@ async fn start_backend(app: AppHandle, state: State<'_, BackendState>) -> Result
         *pid_guard = Some(uv_pid);
     }
 
+    let log_file_hint = log_file.display().to_string();
     let ready_result = tauri::async_runtime::spawn_blocking(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(120);
         // Do not probe immediately: a stale listener on the port causes a false ready.
         let probe_after = std::time::Instant::now() + Duration::from_secs(3);
         loop {
             if std::time::Instant::now() >= deadline {
-                return Err(
+                return Err(format!(
                     "Voice backend did not become ready within 120s. \
-                     Run `cd backend && uv sync --link-mode=copy` and check session.log."
-                        .into(),
-                );
+                     Run `uv sync --link-mode=copy` in the bundled backend folder. \
+                     Log: {log_file_hint}"
+                ));
             }
             match ready_rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(result) => return result,
@@ -960,6 +1013,14 @@ fn chat_database_path(app: AppHandle) -> Result<String, String> {
     Ok(dir.join("vadana.db").display().to_string())
 }
 
+#[tauri::command]
+fn voice_backend_log_path(app: AppHandle) -> Result<String, String> {
+    app.path()
+        .app_log_dir()
+        .map_err(|e| e.to_string())
+        .map(|dir| dir.join("session.log").display().to_string())
+}
+
 /// Remove the local chat DB when migrations were applied then changed (dev upgrades).
 #[tauri::command]
 fn refresh_uninstall_paths(app: AppHandle) -> Result<(), String> {
@@ -1205,6 +1266,7 @@ pub fn run() {
             start_backend,
             stop_backend,
             chat_database_path,
+            voice_backend_log_path,
             reset_chat_database,
             refresh_uninstall_paths,
             download_supertonic_model,

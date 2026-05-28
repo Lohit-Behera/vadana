@@ -6,18 +6,17 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
+from typing import Any
 
 # Avoid broken/partial hf_xet wheels breaking Hugging Face downloads (falls back to HTTP).
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("LITELLM_LOG", "ERROR")
-from typing import Any
 
 import websockets
 
 from live_voice.errors import error_event
+from live_voice.logging_config import setup_logging
 from live_voice.protocol import PROTOCOL_VERSION, server_event
-from live_voice.session import VoiceSession
 
 logger = logging.getLogger(__name__)
 
@@ -25,33 +24,9 @@ PORT = int(os.environ.get("LIVE_VOICE_PORT", "8765"))
 MAX_CLIENT_JSON_BYTES = 64 * 1024
 
 
-def _setup_logging() -> None:
-    handlers: list[logging.Handler] = [logging.StreamHandler()]
-    log_path = os.environ.get("LIVE_VOICE_LOG", "").strip()
-    if not log_path:
-        # Fallback for manual `uv run` without the desktop app (dev only).
-        local = os.environ.get("LOCALAPPDATA", "")
-        appdata = os.environ.get("APPDATA", "")
-        if appdata:
-            log_path = str(Path(appdata) / "com.lohit.vadana" / "logs" / "session.log")
-        elif local:
-            log_path = str(Path(local) / "com.lohit.vadana" / "logs" / "session.log")
-    if log_path:
-        path = Path(log_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(path, encoding="utf-8"))
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
-        handlers=handlers,
-        force=True,
-    )
-    if log_path:
-        logging.getLogger(__name__).info("File logging enabled: %s", log_path)
-
-
 async def _handler(websocket: Any) -> None:
+    from live_voice.session import VoiceSession
+
     peer = getattr(websocket, "remote_address", None)
     logger.info("WebSocket client connected %s", peer or "(unknown)")
     session = VoiceSession(websocket)
@@ -84,7 +59,7 @@ async def _handler(websocket: Any) -> None:
 
 
 def main() -> None:
-    _setup_logging()
+    setup_logging()
 
     async def _serve() -> None:
         async with websockets.serve(_handler, "127.0.0.1", PORT, max_size=None):

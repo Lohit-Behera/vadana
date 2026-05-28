@@ -148,7 +148,7 @@ pnpm tauri build
 
 4. Install and start **LM Studio** (or another configured provider). Model weights (Whisper, Silero, Supertonic) download on first use.
 
-**Logs:** `%LOCALAPPDATA%\vadana\logs\session.log` or set `LIVE_VOICE_LOG`.
+**Logs:** `%APPDATA%\com.lohit.vadana\logs\session.log` (set via `LIVE_VOICE_LOG` by the app) or set `LIVE_VOICE_LOG` manually.
 
 ---
 

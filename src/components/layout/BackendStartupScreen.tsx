@@ -6,6 +6,8 @@ type Props = {
   title: string;
   description?: string;
   error?: string | null;
+  troubleshooting?: string[];
+  logPath?: string;
   busy?: boolean;
   steps?: string[];
   currentStep?: number;
@@ -17,6 +19,8 @@ export function BackendStartupScreen({
   title,
   description,
   error,
+  troubleshooting,
+  logPath,
   busy = false,
   steps,
   currentStep = 0,
@@ -54,6 +58,21 @@ export function BackendStartupScreen({
           </p>
         )}
       </div>
+      {status === "failed" && troubleshooting && troubleshooting.length > 0 && (
+        <div className="bg-muted/40 w-full max-w-xl rounded-xl border p-3 text-left">
+          <p className="text-sm font-medium">Troubleshooting</p>
+          <ul className="text-muted-foreground mt-2 list-disc space-y-1 pl-5 text-sm">
+            {troubleshooting.map((tip) => (
+              <li key={tip}>{tip}</li>
+            ))}
+          </ul>
+          {logPath && (
+            <p className="text-muted-foreground mt-3 text-xs break-all">
+              Log path: {logPath}
+            </p>
+          )}
+        </div>
+      )}
       {status === "loading" && steps && steps.length > 0 && (
         <div className="bg-muted/40 w-full max-w-md rounded-xl border p-3 text-left">
           <ol className="space-y-2 text-sm">

@@ -147,6 +147,7 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
   const [preflightBusy, setPreflightBusy] = useState(false);
   const [backendConnected, setBackendConnected] = useState(false);
   const [backendConnecting, setBackendConnecting] = useState(false);
+  const [backendLogPath, setBackendLogPath] = useState("");
   /** Auto-connect finished (success or gave up); drives startup splash / retry UI. */
   const [backendStartupSettled, setBackendStartupSettled] = useState(false);
   /** User passed the first-time startup gate (do not show full-page loader again). */
@@ -318,6 +319,15 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     if (!settingsLoaded) return;
     void runPreflight();
   }, [settingsLoaded, runPreflight]);
+
+  useEffect(() => {
+    if (!settingsLoaded || !isTauri()) return;
+    void invoke<string>("voice_backend_log_path")
+      .then((path) => setBackendLogPath(path))
+      .catch(() => {
+        /* best-effort */
+      });
+  }, [settingsLoaded]);
 
   const sendJson = useCallback((obj: object) => {
     const payload = JSON.stringify(obj);
@@ -1073,6 +1083,7 @@ export function useVoiceSession(chatBridge?: ChatBridge) {
     preflightBusy,
     backendConnected,
     backendConnecting,
+    backendLogPath,
     initialStartupComplete,
     backendStartupLoading,
     backendStartupFailed,

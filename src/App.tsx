@@ -222,12 +222,36 @@ export default function App() {
     const errorMessage = failedCheck
       ? `${failedCheck.id}: ${failedCheck.message}`
       : v.error ?? "Voice backend did not connect. Check logs and try again.";
+    const err = errorMessage.toLowerCase();
+    const troubleshooting = [
+      "Make sure uv is installed and available in PATH (run `uv --version` in terminal).",
+      "Close Vadana, then run `uv sync --link-mode=copy` in the bundled backend folder: %LOCALAPPDATA%\\Vadana\\resources\\backend",
+      "If the error mentions c10.dll / WinError / DLL, install Microsoft Visual C++ 2015–2022 Redistributable (x64), then restart Windows.",
+      "Retry after setup changes.",
+    ];
+    if (err.includes("uv not found") || err.includes("uv failed")) {
+      troubleshooting.unshift(
+        "uv is missing or failing. Install uv first, reopen Vadana, then retry.",
+      );
+    }
+    if (
+      err.includes("winerror") ||
+      err.includes("c10.dll") ||
+      err.includes("torch") ||
+      err.includes("dll")
+    ) {
+      troubleshooting.unshift(
+        "This looks like a PyTorch DLL/runtime issue. Installing the Visual C++ x64 redistributable usually fixes it.",
+      );
+    }
     return (
       <BackendStartupScreen
         status="failed"
         title="Could not start voice backend"
         description="Fix the issue below, then retry."
         error={errorMessage}
+        troubleshooting={troubleshooting}
+        logPath={v.backendLogPath}
         busy={v.backendConnecting}
         onRetry={() => void v.retryBackendStartup()}
       />

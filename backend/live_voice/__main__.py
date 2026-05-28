@@ -17,6 +17,7 @@ import websockets
 from live_voice.errors import error_event
 from live_voice.logging_config import setup_logging
 from live_voice.protocol import PROTOCOL_VERSION, server_event
+from live_voice.session import VoiceSession
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,6 @@ MAX_CLIENT_JSON_BYTES = 64 * 1024
 
 
 async def _handler(websocket: Any) -> None:
-    from live_voice.session import VoiceSession
-
     peer = getattr(websocket, "remote_address", None)
     logger.info("WebSocket client connected %s", peer or "(unknown)")
     session = VoiceSession(websocket)
@@ -60,6 +59,9 @@ async def _handler(websocket: Any) -> None:
 
 def main() -> None:
     setup_logging()
+    from live_voice.torch_bootstrap import warmup_torch
+
+    warmup_torch()
 
     async def _serve() -> None:
         async with websockets.serve(_handler, "127.0.0.1", PORT, max_size=None):

@@ -7,11 +7,14 @@ from live_voice.logging_config import setup_logging
 setup_logging()
 
 try:
+    from live_voice.torch_bootstrap import warmup_torch
+
+    warmup_torch()
     from live_voice.__main__ import main
 except Exception:
     import logging
 
-    logging.exception("Backend failed to import (see session.log above)")
+    logging.exception("Backend failed to start (see session.log above)")
     raise
 
 if __name__ == "__main__":

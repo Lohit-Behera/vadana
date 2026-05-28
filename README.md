@@ -4,7 +4,7 @@
 
 # Vadana
 
-> **Stable release** — `0.2.2`. Installers and auto-update feed are published via [GitHub Releases](https://github.com/Lohit-Behera/vadana/releases) and [docs/build.md](docs/build.md). Report issues on GitHub.
+> **Stable release** — `0.2.3`. Installers and auto-update feed are published via [GitHub Releases](https://github.com/Lohit-Behera/vadana/releases) and [docs/build.md](docs/build.md). Report issues on GitHub.
 
 **Vadana** (Sanskrit: *vadana* — speech) is an open-source, local desktop voice assistant. Tauri + React talk to a **Python sidecar** over WebSocket. Speech is captured, segmented with **Silero VAD**, transcribed with **local OpenAI Whisper** (`openai-whisper` / PyTorch, default `small`), sent to an LLM via **LiteLLM** (default **LM Studio**; also OpenAI, Anthropic, Ollama, Groq), then spoken with **Supertonic**, **Piper** (if configured), or **pyttsx3** / SAPI on Windows.
 

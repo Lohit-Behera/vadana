@@ -6,7 +6,7 @@ const DOCS = `${REPO}/blob/main/README.md`
 const BUILD = `${REPO}/blob/main/docs/build.md`
 const RELEASES = `${REPO}/releases`
 const DOWNLOAD =
-  'https://github.com/Lohit-Behera/vadana/releases/download/v0.2.2/Vadana_0.2.2_x64-setup.exe'
+  'https://github.com/Lohit-Behera/vadana/releases/download/v0.2.3/Vadana_0.2.3_x64-setup.exe'
 
 const features = [
   {

@@ -1,11 +1,11 @@
 {
+  "pub_date": "2026-05-28T05:12:28Z",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.2/Vadana_0.2.2_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0tIOFBnQUNjK1Y2WVk5UUJMZWhHYjR1d0VBSXRGRFVUM25Dc0JjNDlBT1FTZFRGdjUyaktlMmE3dDhrZ0VGSTl3NkwrMyswN1RWRy9WQkNxVEM5YXdrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5OTQzMjY3CWZpbGU6VmFkYW5hXzAuMi4yX3g2NC1zZXR1cC5leGUKdDhyZzVJVmpKSnByN0ZSZ1FMUnhKYVdVWkM1Sy80Mmg0R1JXUk1PZDVHd2RkQmE1S1VCaHFNZjJ0MkxqNjZFQjhlajNEajhQTXNwNnFEM1NwWmk5RGc9PQo="
+      "url": "https://github.com/Lohit-Behera/vadana/releases/download/v0.2.3/Vadana_0.2.3_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUTWxKeXNyMUlwM0JmTWUxNjk3QzN4MVJuTzRUM054QklXem50eXA3bGo0U2FITFNCK1ZNUWo4dko0ajJJWUJxb1pEQXRhOFppQkx0MjA4RHFMUjBpL1lUK0NaSGJveUFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc5OTQ1MTQ3CWZpbGU6VmFkYW5hXzAuMi4zX3g2NC1zZXR1cC5leGUKTVNBbnlYbWNtU3F0TEI5aVB0WTZ0KzBod1dWakhzSFZFV3VBT1NjK0VNbDlTRTJXSG5weDU4NExXSFJlVjJVZzRNNlFGUWM2bDhxUDhRcUxRdGZxQVE9PQo="
     }
   },
-  "version": "0.2.2",
-  "pub_date": "2026-05-28T04:41:08Z",
-  "notes": "Backend startup fixes: session.log on import errors, stale .venv refresh after updates, improved uninstall cleanup."
+  "version": "0.2.3",
+  "notes": "Fix Windows backend startup: CPU PyTorch DLL path when launched from the desktop app, early torch warmup, and explicit CPU-only torch wheels."
 }
